@@ -22,7 +22,7 @@ type ChatSidebarProps = {
   onLogout: () => void
   onCreateNewChat: () => Promise<void>
   onOpenSession: (sessionId: string) => Promise<void>
-  onRenameSession: (sessionId: string, title: string) => Promise<void>
+  onRenameSession: (sessionId: string, title: string) => Promise<boolean>
   onDeleteSessionIntent: (sessionId: string) => void
 }
 

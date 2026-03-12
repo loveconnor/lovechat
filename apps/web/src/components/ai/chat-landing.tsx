@@ -248,6 +248,24 @@ function getAttachmentTypeLabel(attachment: ChatAttachment) {
   return 'File'
 }
 
+function slugifyFilename(value: string, fallback: string) {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+
+  return normalized || fallback
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 async function fileToDataUrl(file: File) {
   return await new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
@@ -327,9 +345,10 @@ async function extractPdfText(file: File) {
 async function parseUploadedFiles(files: File[]): Promise<ChatAttachment[]> {
   const parsed = await Promise.all(
     files.map(async (file, index) => {
+      const fallbackName = file.type.startsWith('image/') ? `image-${index + 1}.png` : `file-${index + 1}`
       const baseAttachment: ChatAttachment = {
         id: `attachment-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
-        name: file.name,
+        name: file.name.trim() || fallbackName,
         mimeType: file.type || 'application/octet-stream',
         size: file.size,
       }
@@ -444,6 +463,10 @@ function ChatLanding() {
   const [chatSessions, setChatSessions] = useState<ChatSessionSummary[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [isSessionsLoading, setIsSessionsLoading] = useState(true)
+  const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false)
+  const [renameDialogDraft, setRenameDialogDraft] = useState('')
+  const [isRenameSaving, setIsRenameSaving] = useState(false)
+  const [isClearDialogOpen, setIsClearDialogOpen] = useState(false)
   const [sessionIdPendingDelete, setSessionIdPendingDelete] = useState<string | null>(null)
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
@@ -454,6 +477,7 @@ function ChatLanding() {
   const [showThinking, setShowThinking] = useState(false)
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
   const messageListRef = useRef<HTMLDivElement | null>(null)
+  const renameInputRef = useRef<HTMLInputElement | null>(null)
   const copyTimeoutRef = useRef<number | null>(null)
   const thinkingTimeoutRef = useRef<number | null>(null)
   const { stream, addPart, reset: resetStream } = useStream()
@@ -626,7 +650,12 @@ function ChatLanding() {
       return
     }
 
-    const nextActiveId = payload.sessions[0].id
+    const requestedSessionId = new URLSearchParams(window.location.search).get('session')
+    const hasRequestedSession =
+      typeof requestedSessionId === 'string' &&
+      payload.sessions.some((session) => session.id === requestedSessionId)
+
+    const nextActiveId = hasRequestedSession ? (requestedSessionId as string) : payload.sessions[0].id
     setActiveSessionId(nextActiveId)
 
     const detailResponse = await fetch(`${apiBaseUrl}/chat/sessions/${nextActiveId}`, {
@@ -720,12 +749,12 @@ function ChatLanding() {
   async function handleRenameSession(sessionId: string, nextTitle: string) {
     const token = getSessionToken()
     if (!token) {
-      return
+      return false
     }
 
     const normalizedTitle = nextTitle.trim()
     if (!normalizedTitle) {
-      return
+      return false
     }
 
     const response = await fetch(`${apiBaseUrl}/chat/sessions/${sessionId}`, {
@@ -749,7 +778,7 @@ function ChatLanding() {
       }
 
       setErrorMessage(message)
-      return
+      return false
     }
 
     const payload = (await response.json()) as { session: ChatSessionSummary }
@@ -766,6 +795,8 @@ function ChatLanding() {
         ),
       ),
     )
+
+    return true
   }
 
   async function handleDeleteSession(sessionId: string) {
@@ -901,6 +932,26 @@ function ChatLanding() {
   }, [apiBaseUrl])
 
   useEffect(() => {
+    const url = new URL(window.location.href)
+    if (activeSessionId) {
+      url.searchParams.set('session', activeSessionId)
+    } else {
+      url.searchParams.delete('session')
+    }
+
+    window.history.replaceState({}, '', url)
+  }, [activeSessionId])
+
+  useEffect(() => {
+    if (!isRenameDialogOpen || !renameInputRef.current) {
+      return
+    }
+
+    renameInputRef.current.focus()
+    renameInputRef.current.select()
+  }, [isRenameDialogOpen])
+
+  useEffect(() => {
     if (messages.length === 0) {
       return
     }
@@ -966,6 +1017,194 @@ function ChatLanding() {
 
   function handleOpenSettings() {
     setErrorMessage('Settings are coming soon.')
+  }
+
+  async function handleCopyShareLink() {
+    try {
+      const url = new URL(window.location.href)
+      if (activeSessionId) {
+        url.searchParams.set('session', activeSessionId)
+      } else {
+        url.searchParams.delete('session')
+      }
+
+      await navigator.clipboard.writeText(url.toString())
+    } catch {
+      setErrorMessage('Unable to copy chat link to clipboard')
+    }
+  }
+
+  function downloadTextFile(content: string, fileName: string, mimeType: string) {
+    const blob = new Blob([content], { type: mimeType })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = fileName
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  function buildMarkdownExportContent() {
+    const parts: string[] = []
+    parts.push('# LoveChat Export')
+    parts.push('')
+    parts.push(`Exported: ${new Date().toLocaleString()}`)
+    parts.push('')
+
+    if (messages.length === 0) {
+      parts.push('_No messages in this chat yet._')
+      return parts.join('\n')
+    }
+
+    for (const message of messages) {
+      const heading = message.role === 'user' ? '## You' : '## LoveChat'
+      parts.push(heading)
+      parts.push('')
+      parts.push(message.content.trim() || '_Empty message_')
+
+      if (message.attachments && message.attachments.length > 0) {
+        parts.push('')
+        parts.push('Attachments:')
+        for (const attachment of message.attachments) {
+          parts.push(`- ${attachment.name} (${getAttachmentTypeLabel(attachment)}, ${formatFileSize(attachment.size)})`)
+        }
+      }
+
+      parts.push('')
+    }
+
+    return parts.join('\n').trimEnd()
+  }
+
+  function handleExportMarkdown() {
+    const activeTitle = chatSessions.find((session) => session.id === activeSessionId)?.title ?? 'chat'
+    const fileName = `${slugifyFilename(activeTitle, 'chat')}.md`
+    const content = buildMarkdownExportContent()
+    downloadTextFile(content, fileName, 'text/markdown;charset=utf-8')
+  }
+
+  function handleExportPdf() {
+    const activeTitle = chatSessions.find((session) => session.id === activeSessionId)?.title ?? 'LoveChat Export'
+    const printableWindow = window.open('', '_blank', 'noopener,noreferrer')
+    if (!printableWindow) {
+      setErrorMessage('Unable to open print dialog. Please allow pop-ups and try again.')
+      return
+    }
+
+    const renderedMessages =
+      messages.length === 0
+        ? '<p class="muted">No messages in this chat yet.</p>'
+        : messages
+            .map((message) => {
+              const author = message.role === 'user' ? 'You' : 'LoveChat'
+              const messageBody = escapeHtml(message.content).replace(/\n/g, '<br/>')
+              return `<article><h2>${author}</h2><p>${messageBody || '<em>Empty message</em>'}</p></article>`
+            })
+            .join('')
+
+    printableWindow.document.write(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(activeTitle)}</title>
+    <style>
+      body { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 32px; color: #111827; }
+      h1 { margin: 0 0 8px; font-size: 22px; }
+      .muted { color: #6b7280; }
+      article { margin: 0 0 20px; border-bottom: 1px solid #e5e7eb; padding-bottom: 14px; }
+      h2 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: #374151; }
+      p { margin: 0; line-height: 1.5; white-space: normal; }
+    </style>
+  </head>
+  <body>
+    <h1>${escapeHtml(activeTitle)}</h1>
+    <p class="muted">Exported ${escapeHtml(new Date().toLocaleString())}</p>
+    ${renderedMessages}
+    <script>
+      window.onload = () => {
+        window.print();
+      };
+    </script>
+  </body>
+</html>`)
+    printableWindow.document.close()
+  }
+
+  async function handleRenameActiveChat() {
+    if (!activeSessionId) {
+      setErrorMessage('No active chat to rename')
+      return
+    }
+
+    const currentTitle = chatSessions.find((session) => session.id === activeSessionId)?.title ?? 'New chat'
+    setRenameDialogDraft(currentTitle)
+    setIsRenameDialogOpen(true)
+  }
+
+  function closeRenameDialog() {
+    if (isRenameSaving) {
+      return
+    }
+
+    setIsRenameDialogOpen(false)
+    setRenameDialogDraft('')
+  }
+
+  async function submitRenameDialog() {
+    if (!activeSessionId || isRenameSaving) {
+      return
+    }
+
+    const normalizedTitle = renameDialogDraft.trim()
+    if (!normalizedTitle) {
+      return
+    }
+
+    setIsRenameSaving(true)
+    try {
+      const didRename = await handleRenameSession(activeSessionId, normalizedTitle)
+      if (didRename) {
+        setIsRenameDialogOpen(false)
+        setRenameDialogDraft('')
+      }
+    } finally {
+      setIsRenameSaving(false)
+    }
+  }
+
+  function handleClearActiveChat() {
+    if (messages.length === 0) {
+      return
+    }
+
+    setIsClearDialogOpen(true)
+  }
+
+  function closeClearDialog() {
+    setIsClearDialogOpen(false)
+  }
+
+  function confirmClearDialog() {
+    setIsClearDialogOpen(false)
+
+    setMessages([])
+    setPrompt('')
+    setActiveTopic(null)
+    setEditingMessageId(null)
+    setEditingDraft('')
+    setStreamingMessageId(null)
+    resetStream()
+  }
+
+  function handleDeleteActiveChat() {
+    if (!activeSessionId) {
+      setErrorMessage('No active chat to delete')
+      return
+    }
+
+    setSessionIdPendingDelete(activeSessionId)
   }
 
   async function requestAssistantReply(history: ChatMessage[], chatSessionId: string) {
@@ -1240,9 +1479,16 @@ function ChatLanding() {
       <div
         className="relative ml-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-[24px] border border-[#E5E5E5] bg-white shadow-sm transition-all duration-300 md:ml-3 dark:border-white/10 dark:bg-[#212121]"
       >
-        <ChatHeader />
+        <ChatHeader
+          onCopyLink={handleCopyShareLink}
+          onExportPdf={handleExportPdf}
+          onExportMarkdown={handleExportMarkdown}
+          onRenameChat={() => void handleRenameActiveChat()}
+          onClearChat={handleClearActiveChat}
+          onDeleteChat={handleDeleteActiveChat}
+        />
 
-        <section className="flex min-h-0 flex-1 flex-col px-4 pt-16 pb-6">
+        <section className="flex min-h-0 flex-1 flex-col px-4 pt-16 pb-4">
         <div className={`flex min-h-0 w-full flex-1 flex-col ${messages.length === 0 ? 'justify-center' : ''}`}>
           {messages.length === 0 ? (
             <div className="mx-auto w-full max-w-3xl">
@@ -1304,9 +1550,9 @@ function ChatLanding() {
           ) : (
             <div
               ref={messageListRef}
-              className="min-h-0 flex-1 overflow-y-auto pb-28 [&::-webkit-scrollbar-thumb]:rounded-[10px] [&::-webkit-scrollbar-thumb]:bg-[#E5E7EB] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1.5"
+              className="min-h-0 flex-1 overflow-y-auto pb-16 [&::-webkit-scrollbar-thumb]:rounded-[10px] [&::-webkit-scrollbar-thumb]:bg-[#E5E7EB] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1.5"
             >
-              <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 py-8">
+              <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-8 pt-8 pb-4">
                 {messages.map((message) =>
                   message.role === 'user' ? (
                     <div key={message.id} className="group relative flex w-full flex-col items-end">
@@ -1461,7 +1707,7 @@ function ChatLanding() {
           ) : null}
 
           {messages.length > 0 ? (
-            <div className="sticky bottom-0 z-30 pb-2 pt-3">
+            <div className="sticky bottom-0 z-30 pb-1 pt-2">
               <div className="mx-auto w-full max-w-3xl">
                 <ChatInput
                   prompt={prompt}
@@ -1510,6 +1756,96 @@ function ChatLanding() {
                 className="rounded-[10px] bg-red-600 px-4 py-2 text-[14px] font-medium text-white shadow-sm transition-colors hover:bg-red-700"
               >
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isRenameDialogOpen ? (
+        <div
+          className="fixed inset-0 z-[55] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+          onClick={closeRenameDialog}
+        >
+          <div
+            className="w-full max-w-sm rounded-[20px] bg-white p-6 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="mb-1 text-[18px] font-semibold text-gray-900">Rename Chat</h3>
+            <p className="mb-4 text-[14px] text-gray-500">
+              Choose a new title for this chat session.
+            </p>
+
+            <input
+              ref={renameInputRef}
+              type="text"
+              value={renameDialogDraft}
+              onChange={(event) => setRenameDialogDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  void submitRenameDialog()
+                }
+
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  closeRenameDialog()
+                }
+              }}
+              className="w-full rounded-[10px] border border-[#E5E5E5] bg-white px-3 py-2 text-[14px] text-gray-900 outline-none transition-colors focus:border-gray-400"
+              placeholder="Chat title"
+              maxLength={120}
+            />
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeRenameDialog}
+                className="rounded-[10px] px-4 py-2 text-[14px] font-medium text-gray-700 transition-colors hover:bg-gray-100"
+                disabled={isRenameSaving}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitRenameDialog()}
+                className="rounded-[10px] bg-[#E5E5E5] px-4 py-2 text-[14px] font-medium text-[#111827] shadow-sm transition-colors hover:bg-gray-200 disabled:opacity-60"
+                disabled={isRenameSaving || !renameDialogDraft.trim()}
+              >
+                {isRenameSaving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isClearDialogOpen ? (
+        <div
+          className="fixed inset-0 z-[54] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+          onClick={closeClearDialog}
+        >
+          <div
+            className="w-full max-w-sm rounded-[20px] bg-white p-6 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="mb-1 text-[18px] font-semibold text-gray-900">Clear Chat</h3>
+            <p className="text-[14px] text-gray-500">
+              Clear all messages in this chat view?
+            </p>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeClearDialog}
+                className="rounded-[10px] px-4 py-2 text-[14px] font-medium text-gray-700 transition-colors hover:bg-gray-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmClearDialog}
+                className="rounded-[10px] bg-[#E5E5E5] px-4 py-2 text-[14px] font-medium text-[#111827] shadow-sm transition-colors hover:bg-gray-200"
+              >
+                Clear
               </button>
             </div>
           </div>

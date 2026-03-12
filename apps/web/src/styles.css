@@ -584,3 +584,27 @@ a {
     inset 0 1px 0 rgba(255, 255, 255, 0.1),
     0 0 0 1px rgba(255, 255, 255, 0.14);
 }
+
+.lovechat-shell .chat-delete-item {
+  background-color: transparent !important;
+}
+
+.lovechat-shell .chat-delete-item:hover,
+.lovechat-shell .chat-delete-item:focus-visible,
+.lovechat-shell .chat-delete-item[data-highlighted] {
+  background-color: #fef2f2 !important;
+}
+
+.dark .lovechat-shell .chat-delete-item,
+:root[data-theme="dark"] .lovechat-shell .chat-delete-item {
+  background-color: transparent !important;
+}
+
+.dark .lovechat-shell .chat-delete-item:hover,
+.dark .lovechat-shell .chat-delete-item:focus-visible,
+.dark .lovechat-shell .chat-delete-item[data-highlighted],
+:root[data-theme="dark"] .lovechat-shell .chat-delete-item:hover,
+:root[data-theme="dark"] .lovechat-shell .chat-delete-item:focus-visible,
+:root[data-theme="dark"] .lovechat-shell .chat-delete-item[data-highlighted] {
+  background-color: rgba(239, 68, 68, 0.1) !important;
+}

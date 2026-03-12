@@ -21,6 +21,50 @@ type UploadedFile = {
   file: File
 }
 
+function createFileId() {
+  return `file-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function extensionFromMimeType(mimeType: string) {
+  if (mimeType === 'image/png') {
+    return 'png'
+  }
+
+  if (mimeType === 'image/jpeg') {
+    return 'jpg'
+  }
+
+  if (mimeType === 'image/webp') {
+    return 'webp'
+  }
+
+  if (mimeType === 'image/gif') {
+    return 'gif'
+  }
+
+  if (mimeType === 'image/svg+xml') {
+    return 'svg'
+  }
+
+  return 'png'
+}
+
+function normalizeFileForUpload(file: File) {
+  if (file.name.trim()) {
+    return file
+  }
+
+  if (!file.type.startsWith('image/')) {
+    return file
+  }
+
+  const extension = extensionFromMimeType(file.type)
+  return new File([file], `pasted-image-${Date.now()}.${extension}`, {
+    type: file.type,
+    lastModified: file.lastModified,
+  })
+}
+
 function isImageFile(file: File) {
   return file.type.startsWith('image/')
 }
@@ -174,14 +218,14 @@ function ChatInput({
   }, [activePreviewFile])
 
   function handleFileInputChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? [])
+    const files = Array.from(event.target.files ?? []).map((file) => normalizeFileForUpload(file))
     if (files.length === 0) {
       return
     }
 
     setUploadedFiles((previousFiles) => {
       const nextFiles = files.map((file) => ({
-        id: `file-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        id: createFileId(),
         file,
       }))
 
@@ -193,6 +237,30 @@ function ChatInput({
 
   function handleOpenFilePicker() {
     fileInputRef.current?.click()
+  }
+
+  function handlePaste(event: React.ClipboardEvent<HTMLInputElement>) {
+    const clipboardItems = Array.from(event.clipboardData.items)
+    const pastedImageFiles = clipboardItems
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null)
+      .map((file) => normalizeFileForUpload(file))
+
+    if (pastedImageFiles.length === 0) {
+      return
+    }
+
+    event.preventDefault()
+
+    setUploadedFiles((previousFiles) => {
+      const nextFiles = pastedImageFiles.map((file) => ({
+        id: createFileId(),
+        file,
+      }))
+
+      return [...previousFiles, ...nextFiles]
+    })
   }
 
   function handleRemoveUploadedFile(fileId: string) {
@@ -295,6 +363,7 @@ function ChatInput({
             value={prompt}
             onChange={(event) => onPromptChange(event.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder="Ask Leo a question..."
             disabled={isLoading}
             className="w-full bg-transparent text-[16px] text-gray-800 placeholder:text-[#9CA3AF] outline-none dark:text-gray-100 dark:placeholder:text-gray-500"
