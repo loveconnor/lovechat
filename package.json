@@ -1,0 +1,27 @@
+{
+  "name": "lovechat",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @lovechat/web --filter @lovechat/backend dev",
+    "dev:web": "pnpm --filter @lovechat/web dev",
+    "dev:backend": "pnpm --filter @lovechat/backend dev",
+    "build": "pnpm -r build",
+    "preview": "pnpm --filter @lovechat/web preview",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "format": "prettier --check .",
+    "check": "prettier --write . && pnpm -r lint"
+  },
+  "devDependencies": {
+    "@tanstack/eslint-config": "latest",
+    "eslint": "^10.0.3",
+    "prettier": "^3.8.1"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "lightningcss"
+    ]
+  }
+}
