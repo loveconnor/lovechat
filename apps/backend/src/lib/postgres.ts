@@ -55,6 +55,9 @@ export async function initializeDatabase() {
       content TEXT NOT NULL,
       model TEXT,
       attachments_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      citations_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      searched_web BOOLEAN NOT NULL DEFAULT FALSE,
+      thinking_text TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `)
@@ -62,6 +65,52 @@ export async function initializeDatabase() {
   await pgPool.query(`
     ALTER TABLE chat_messages
     ADD COLUMN IF NOT EXISTS attachments_json JSONB NOT NULL DEFAULT '[]'::jsonb
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE chat_messages
+    ADD COLUMN IF NOT EXISTS citations_json JSONB NOT NULL DEFAULT '[]'::jsonb
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE chat_messages
+    ADD COLUMN IF NOT EXISTS searched_web BOOLEAN NOT NULL DEFAULT FALSE
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE chat_messages
+    ADD COLUMN IF NOT EXISTS thinking_text TEXT
+  `)
+
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS chat_generations (
+      id UUID PRIMARY KEY,
+      conversation_id UUID NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      model TEXT NOT NULL,
+      use_web_search BOOLEAN NOT NULL DEFAULT FALSE,
+      use_learning_mode BOOLEAN NOT NULL DEFAULT FALSE,
+      input_messages_json JSONB NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'failed')),
+      response_text TEXT NOT NULL DEFAULT '',
+      citations_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      searched_web BOOLEAN NOT NULL DEFAULT FALSE,
+      thinking_text TEXT,
+      error_message TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ
+    )
+  `)
+
+  await pgPool.query(`
+    CREATE INDEX IF NOT EXISTS idx_chat_generations_conversation_status
+    ON chat_generations (conversation_id, status, updated_at DESC)
+  `)
+
+  await pgPool.query(`
+    CREATE INDEX IF NOT EXISTS idx_chat_generations_user_created
+    ON chat_generations (user_id, created_at DESC)
   `)
 
   await pgPool.query(`

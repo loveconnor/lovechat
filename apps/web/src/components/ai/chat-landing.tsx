@@ -40,18 +40,29 @@ type OnboardingProfileResponse = {
 }
 
 type ChatCompletionResponse = {
-  message: {
-    role: 'assistant'
-    content: string
-    citations?: unknown
-    searchedWeb?: boolean
-    thinking?: string | null
-  }
-  citations?: unknown
-  searchedWeb?: boolean
-  thinking?: string | null
+  generationId: string
+  status: 'queued' | 'in_progress'
   chatSessionId?: string
   sessionTitle?: string
+}
+
+type ChatGenerationPayload = {
+  id: string
+  chatSessionId: string
+  sessionTitle?: string
+  status: 'queued' | 'in_progress' | 'completed' | 'failed'
+  content: string
+  citations?: unknown
+  searchedWeb?: boolean
+  thinking?: string
+  errorMessage?: string
+  createdAt: string
+  updatedAt: string
+  completedAt?: string | null
+}
+
+type ChatGenerationResponse = {
+  generation: ChatGenerationPayload
 }
 
 type ChatSessionSummary = {
@@ -59,6 +70,7 @@ type ChatSessionSummary = {
   title: string
   createdAt: string
   updatedAt: string
+  generationStatus?: 'queued' | 'in_progress' | null
 }
 
 type ChatSessionsResponse = {
@@ -73,7 +85,20 @@ type ChatSessionResponse = {
     attachments?: unknown
     citations?: unknown
     searchedWeb?: boolean
+    thinking?: string
   }>
+  activeGeneration?: {
+    id: string
+    status: 'queued' | 'in_progress'
+    content: string
+    citations?: unknown
+    searchedWeb?: boolean
+    thinking?: string
+    errorMessage?: string
+    createdAt: string
+    updatedAt: string
+    completedAt?: string | null
+  }
 }
 
 const webSearchKeywordPattern = /\b(research|search)\b/i
@@ -82,8 +107,6 @@ const defaultThinkingText = 'LoveChat is thinking...'
 const thinkingRevealDelayMs = 1200
 const attachmentTextContentLimit = 20_000
 const attachmentImageDataUrlLimit = 6_000_000
-
-const modelOptions = ['gpt-5-mini', 'gpt-5', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o-mini']
 
 const suggestionsData: Record<Topic, string[]> = {
   Research: [
@@ -451,7 +474,7 @@ function getSessionBucketLabel(updatedAt: string) {
 function ChatLanding() {
   const navigate = useNavigate()
   const apiBaseUrl = useMemo(() => import.meta.env.VITE_API_URL ?? 'http://localhost:4000', [])
-  const [selectedModel, setSelectedModel] = useState(modelOptions[0])
+  const [selectedModel, setSelectedModel] = useState('GPT-4o')
   const [activeTopic, setActiveTopic] = useState<Topic | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [fullName, setFullName] = useState('')
@@ -480,7 +503,12 @@ function ChatLanding() {
   const renameInputRef = useRef<HTMLInputElement | null>(null)
   const copyTimeoutRef = useRef<number | null>(null)
   const thinkingTimeoutRef = useRef<number | null>(null)
-  const { stream, addPart, reset: resetStream } = useStream()
+  const assistantRequestAbortRef = useRef<AbortController | null>(null)
+  const generationPollTimeoutRef = useRef<number | null>(null)
+  const activeGenerationIdRef = useRef<string | null>(null)
+  const activeGenerationMessageIdRef = useRef<string | null>(null)
+  const activeGenerationContentRef = useRef('')
+  const { stream, addPart, reset: resetStream, seed: seedStream } = useStream()
 
   const suggestions = useMemo(() => {
     if (!activeTopic) {
@@ -493,6 +521,9 @@ function ChatLanding() {
   const avatarNameSource = useMemo(() => fullName.trim() || nickname.trim(), [fullName, nickname])
   const avatarInitials = useMemo(() => getInitials(avatarNameSource), [avatarNameSource])
   const firstName = useMemo(() => getFirstName(fullName, nickname), [fullName, nickname])
+  const activeChatTitle = useMemo(() => {
+    return chatSessions.find((session) => session.id === activeSessionId)?.title ?? 'New chat'
+  }, [chatSessions, activeSessionId])
   const groupedSessions = useMemo(() => {
     return chatSessions.reduce<Record<string, ChatSessionSummary[]>>((accumulator, session) => {
       const bucket = getSessionBucketLabel(session.updatedAt)
@@ -502,6 +533,15 @@ function ChatLanding() {
       return accumulator
     }, {})
   }, [chatSessions])
+
+  const activeStreamingContent = useMemo(() => {
+    if (!streamingMessageId) {
+      return ''
+    }
+
+    const activeStreamingMessage = messages.find((message) => message.id === streamingMessageId)
+    return activeStreamingMessage?.content ?? ''
+  }, [messages, streamingMessageId])
 
   function getSessionToken() {
     return window.localStorage.getItem('lovechat_session_token')
@@ -523,6 +563,202 @@ function ChatLanding() {
         ...(item.searchedWeb !== undefined ? { searchedWeb: item.searchedWeb } : {}),
       })
     })
+  }
+
+  function stopGenerationPolling() {
+    if (generationPollTimeoutRef.current !== null) {
+      window.clearTimeout(generationPollTimeoutRef.current)
+      generationPollTimeoutRef.current = null
+    }
+
+    activeGenerationIdRef.current = null
+    activeGenerationMessageIdRef.current = null
+    activeGenerationContentRef.current = ''
+  }
+
+  function ensureGenerationMessage(messageId: string, content: string) {
+    setMessages((previousMessages) => {
+      const existingIndex = previousMessages.findIndex((message) => message.id === messageId)
+
+      if (existingIndex < 0) {
+        return [
+          ...previousMessages,
+          {
+            id: messageId,
+            role: 'assistant',
+            content,
+          },
+        ]
+      }
+
+      return previousMessages.map((message) => {
+        if (message.id !== messageId) {
+          return message
+        }
+
+        return {
+          ...message,
+          content,
+        }
+      })
+    })
+  }
+
+  function startGenerationPolling(
+    generationId: string,
+    sessionId: string,
+    generationMessageId: string,
+    initialContent = '',
+    initialStatus: 'queued' | 'in_progress' = 'in_progress',
+  ) {
+    const token = getSessionToken()
+    if (!token) {
+      stopGenerationPolling()
+      setIsLoading(false)
+      return
+    }
+
+    stopGenerationPolling()
+    activeGenerationIdRef.current = generationId
+    activeGenerationMessageIdRef.current = generationMessageId
+    activeGenerationContentRef.current = initialContent
+    setSessionGenerationStatus(sessionId, initialStatus)
+
+    seedStream(initialContent)
+    setStreamingMessageId(generationMessageId)
+    setIsLoading(true)
+
+    const pollOnce = async () => {
+      if (activeGenerationIdRef.current !== generationId) {
+        return
+      }
+
+      let response: Response
+      try {
+        response = await fetch(`${apiBaseUrl}/chat/generations/${generationId}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+      } catch {
+        if (activeGenerationIdRef.current === generationId) {
+          generationPollTimeoutRef.current = window.setTimeout(() => {
+            void pollOnce()
+          }, 1200)
+        }
+        return
+      }
+
+      if (!response.ok) {
+        let message = 'Unable to resume assistant generation'
+        try {
+          const payload = (await response.json()) as { message?: string }
+          if (payload.message) {
+            message = payload.message
+          }
+        } catch {
+          // Keep fallback message.
+        }
+
+        stopGenerationPolling()
+        setStreamingMessageId(null)
+        setIsLoading(false)
+        setErrorMessage(message)
+        return
+      }
+
+      const payload = (await response.json()) as ChatGenerationResponse
+      const generation = payload.generation
+
+      touchSession(generation.chatSessionId, generation.sessionTitle)
+
+      const previousContent = activeGenerationContentRef.current
+      const nextContent = generation.content || ''
+
+      if (nextContent !== previousContent) {
+        ensureGenerationMessage(generationMessageId, nextContent)
+        activeGenerationContentRef.current = nextContent
+
+        if (nextContent.trim().length > 0) {
+          if (thinkingTimeoutRef.current !== null) {
+            window.clearTimeout(thinkingTimeoutRef.current)
+            thinkingTimeoutRef.current = null
+          }
+          setShowThinking(false)
+        }
+
+        if (nextContent.startsWith(previousContent)) {
+          const delta = nextContent.slice(previousContent.length)
+          if (delta) {
+            addPart(delta)
+          }
+        } else {
+          resetStream()
+          if (nextContent) {
+            addPart(nextContent)
+          }
+        }
+      }
+
+      if (generation.status === 'completed') {
+        const citations = normalizeCitations(generation.citations)
+        const searchedWeb = Boolean(generation.searchedWeb ?? citations.length > 0)
+        const finalizedContent = generation.content || ''
+
+        setMessages((previousMessages) =>
+          previousMessages.map((message) =>
+            message.id === generationMessageId
+              ? {
+                  ...message,
+                  content: finalizedContent,
+                  ...(citations.length > 0 ? { citations } : {}),
+                  searchedWeb,
+                }
+              : message,
+          ),
+        )
+
+        if (typeof generation.thinking === 'string' && generation.thinking.trim()) {
+          setThinkingText(generation.thinking)
+          setShowThinking(true)
+        }
+
+        stopGenerationPolling()
+        setSessionGenerationStatus(generation.chatSessionId, null)
+        setStreamingMessageId(null)
+        setIsLoading(false)
+        return
+      }
+
+      if (generation.status === 'failed') {
+        stopGenerationPolling()
+        setSessionGenerationStatus(generation.chatSessionId, null)
+        setStreamingMessageId(null)
+        setIsLoading(false)
+        setErrorMessage(generation.errorMessage || 'Unable to complete chat response')
+        return
+      }
+
+      generationPollTimeoutRef.current = window.setTimeout(() => {
+        void pollOnce()
+      }, 700)
+    }
+
+    void pollOnce()
+  }
+
+  function resumeActiveGeneration(sessionId: string, generation: ChatSessionResponse['activeGeneration']) {
+    if (!generation) {
+      return
+    }
+
+    const generationId = generation.id
+    const generationMessageId = `assistant-generation-${generationId}`
+    const generationContent = generation.content || ''
+
+    setActiveSessionId(sessionId)
+    ensureGenerationMessage(generationMessageId, generationContent)
+    startGenerationPolling(generationId, sessionId, generationMessageId, generationContent, generation.status)
   }
 
   async function createChatSession() {
@@ -611,6 +847,43 @@ function ChatLanding() {
     })
   }
 
+  function setSessionGenerationStatus(sessionId: string, generationStatus: 'queued' | 'in_progress' | null) {
+    setChatSessions((previousSessions) =>
+      previousSessions.map((session) =>
+        session.id === sessionId
+          ? {
+              ...session,
+              generationStatus,
+            }
+          : session,
+      ),
+    )
+  }
+
+  async function refreshSessionStatuses() {
+    const token = getSessionToken()
+    if (!token) {
+      return
+    }
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/chat/sessions`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+
+      if (!response.ok) {
+        return
+      }
+
+      const payload = (await response.json()) as ChatSessionsResponse
+      setChatSessions(sortSessionsByUpdatedAt(payload.sessions))
+    } catch {
+      // Ignore transient refresh failures.
+    }
+  }
+
   async function loadChatSessions() {
     const token = getSessionToken()
     if (!token) {
@@ -644,6 +917,7 @@ function ChatLanding() {
     setChatSessions(sortSessionsByUpdatedAt(payload.sessions))
 
     if (payload.sessions.length === 0) {
+      stopGenerationPolling()
       setActiveSessionId(null)
       setMessages([])
       setIsSessionsLoading(false)
@@ -655,7 +929,7 @@ function ChatLanding() {
       typeof requestedSessionId === 'string' &&
       payload.sessions.some((session) => session.id === requestedSessionId)
 
-    const nextActiveId = hasRequestedSession ? (requestedSessionId as string) : payload.sessions[0].id
+    const nextActiveId = hasRequestedSession ? requestedSessionId : payload.sessions[0].id
     setActiveSessionId(nextActiveId)
 
     const detailResponse = await fetch(`${apiBaseUrl}/chat/sessions/${nextActiveId}`, {
@@ -682,16 +956,18 @@ function ChatLanding() {
 
     const detailPayload = (await detailResponse.json()) as ChatSessionResponse
     setMessages(materializeMessages(detailPayload.messages))
+    resumeActiveGeneration(nextActiveId, detailPayload.activeGeneration)
     setIsSessionsLoading(false)
   }
 
   async function openSession(sessionId: string) {
     const token = getSessionToken()
-    if (!token || isLoading) {
+    if (!token) {
       return
     }
 
     setErrorMessage(null)
+  stopGenerationPolling()
     setActiveSessionId(sessionId)
     setEditingMessageId(null)
     setEditingDraft('')
@@ -721,14 +997,11 @@ function ChatLanding() {
 
     const payload = (await response.json()) as ChatSessionResponse
     setMessages(materializeMessages(payload.messages))
+    resumeActiveGeneration(sessionId, payload.activeGeneration)
     setActiveTopic(null)
   }
 
   async function handleCreateNewChat() {
-    if (isLoading) {
-      return
-    }
-
     setErrorMessage(null)
     const createdSession = await createChatSession()
     if (!createdSession) {
@@ -742,6 +1015,7 @@ function ChatLanding() {
     setEditingMessageId(null)
     setEditingDraft('')
     setActiveTopic(null)
+    stopGenerationPolling()
     setStreamingMessageId(null)
     resetStream()
   }
@@ -932,6 +1206,24 @@ function ChatLanding() {
   }, [apiBaseUrl])
 
   useEffect(() => {
+    const hasBackgroundGenerations = chatSessions.some(
+      (session) => session.generationStatus === 'queued' || session.generationStatus === 'in_progress',
+    )
+
+    if (!hasBackgroundGenerations) {
+      return
+    }
+
+    const intervalId = window.setInterval(() => {
+      void refreshSessionStatuses()
+    }, 2500)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [chatSessions, apiBaseUrl])
+
+  useEffect(() => {
     const url = new URL(window.location.href)
     if (activeSessionId) {
       url.searchParams.set('session', activeSessionId)
@@ -966,6 +1258,9 @@ function ChatLanding() {
 
   useEffect(() => {
     return () => {
+      assistantRequestAbortRef.current?.abort()
+      stopGenerationPolling()
+
       if (copyTimeoutRef.current !== null) {
         window.clearTimeout(copyTimeoutRef.current)
       }
@@ -1000,6 +1295,11 @@ function ChatLanding() {
       return
     }
 
+    // Keep typewriter mode active while backend generation is still in progress.
+    if (activeGenerationIdRef.current !== null) {
+      return
+    }
+
     if (stream && stream === activeMessage.content) {
       setStreamingMessageId(null)
     }
@@ -1009,6 +1309,20 @@ function ChatLanding() {
     window.localStorage.removeItem('lovechat_session_token')
     window.localStorage.removeItem('lovechat_onboarding_profile')
     void navigate({ to: '/sign-in' })
+  }
+
+  function handleStopAssistantResponse() {
+    assistantRequestAbortRef.current?.abort('manual')
+    assistantRequestAbortRef.current = null
+    stopGenerationPolling()
+
+    if (thinkingTimeoutRef.current !== null) {
+      window.clearTimeout(thinkingTimeoutRef.current)
+      thinkingTimeoutRef.current = null
+    }
+
+    setShowThinking(false)
+    setIsLoading(false)
   }
 
   function handleOpenProfile() {
@@ -1087,49 +1401,330 @@ function ChatLanding() {
 
   function handleExportPdf() {
     const activeTitle = chatSessions.find((session) => session.id === activeSessionId)?.title ?? 'LoveChat Export'
-    const printableWindow = window.open('', '_blank', 'noopener,noreferrer')
-    if (!printableWindow) {
-      setErrorMessage('Unable to open print dialog. Please allow pop-ups and try again.')
-      return
-    }
+    const renderedAssistantBlocks = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-export-assistant-markdown]'),
+    )
+    let assistantBlockIndex = 0
 
     const renderedMessages =
       messages.length === 0
-        ? '<p class="muted">No messages in this chat yet.</p>'
+        ? '<p class="export-empty">No messages in this chat yet.</p>'
         : messages
             .map((message) => {
               const author = message.role === 'user' ? 'You' : 'LoveChat'
-              const messageBody = escapeHtml(message.content).replace(/\n/g, '<br/>')
-              return `<article><h2>${author}</h2><p>${messageBody || '<em>Empty message</em>'}</p></article>`
+              const fallbackBody = escapeHtml(message.content).replace(/\n/g, '<br/>') || '<em>Empty message</em>'
+              const assistantRendered = renderedAssistantBlocks[assistantBlockIndex]?.innerHTML
+              if (message.role === 'assistant') {
+                assistantBlockIndex += 1
+              }
+
+              const messageBody =
+                message.role === 'assistant' && assistantRendered && assistantRendered.trim().length > 0
+                  ? assistantRendered
+                  : fallbackBody
+
+              const attachments = message.attachments?.length
+                ? `<ul class="export-attachments">${message.attachments
+                    .map(
+                      (attachment) =>
+                        `<li>${escapeHtml(attachment.name)} <span class="export-attachment-meta">(${escapeHtml(getAttachmentTypeLabel(attachment))}, ${escapeHtml(formatFileSize(attachment.size))})</span></li>`,
+                    )
+                    .join('')}</ul>`
+                : ''
+
+              const roleClass = message.role === 'user' ? 'export-message-user' : 'export-message-assistant'
+              return `<article class="export-message ${roleClass}"><header class="export-message-header">${escapeHtml(author)}</header><div class="export-message-body">${messageBody}</div>${attachments}</article>`
             })
             .join('')
 
-    printableWindow.document.write(`<!doctype html>
+    const printableDocument = `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
     <title>${escapeHtml(activeTitle)}</title>
     <style>
-      body { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 32px; color: #111827; }
-      h1 { margin: 0 0 8px; font-size: 22px; }
-      .muted { color: #6b7280; }
-      article { margin: 0 0 20px; border-bottom: 1px solid #e5e7eb; padding-bottom: 14px; }
-      h2 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: #374151; }
-      p { margin: 0; line-height: 1.5; white-space: normal; }
+      @page { margin: 0.75in; }
+      :root {
+        color: #0f172a;
+        font-family: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 160px, #ffffff 280px);
+        color: #0f172a;
+        line-height: 1.7;
+        font-size: 12.5px;
+      }
+      .export-shell {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 24px 24px 18px;
+      }
+      .export-header {
+        border-radius: 14px;
+        border: 1px solid #d6e3ff;
+        background: linear-gradient(165deg, #edf3ff 0%, #f7faff 52%, #ffffff 100%);
+        padding: 16px 18px;
+        margin-bottom: 16px;
+      }
+      .export-title {
+        margin: 0;
+        font-family: 'Avenir Next', 'Segoe UI', sans-serif;
+        font-size: 26px;
+        font-weight: 700;
+        line-height: 1.25;
+        letter-spacing: -0.01em;
+      }
+      .export-meta {
+        margin: 6px 0 0;
+        color: #475569;
+        font-size: 11px;
+      }
+      .export-empty {
+        margin: 8px 0 0;
+        color: #475569;
+      }
+      .export-message {
+        margin: 0 0 12px;
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        overflow: visible;
+        break-inside: auto;
+        page-break-inside: auto;
+      }
+      .export-message-user {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+      .export-message-assistant {
+        break-inside: auto;
+        page-break-inside: auto;
+      }
+      .export-message-header {
+        border-bottom: 1px solid #edf2f7;
+        background: #f8fafc;
+        color: #334155;
+        font-family: 'Avenir Next', 'Segoe UI', sans-serif;
+        font-size: 10.5px;
+        letter-spacing: 0.09em;
+        font-weight: 700;
+        text-transform: uppercase;
+        padding: 9px 12px;
+      }
+      .export-message-body {
+        padding: 12px 14px;
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+      .export-message-body h1,
+      .export-message-body h2,
+      .export-message-body h3,
+      .export-message-body h4,
+      .export-message-body pre,
+      .export-message-body table,
+      .export-message-body blockquote {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+      .export-message-body > *:first-child { margin-top: 0 !important; }
+      .export-message-body > *:last-child { margin-bottom: 0 !important; }
+      .export-message-body p,
+      .export-message-body ul,
+      .export-message-body ol,
+      .export-message-body blockquote,
+      .export-message-body pre,
+      .export-message-body table,
+      .export-message-body h1,
+      .export-message-body h2,
+      .export-message-body h3,
+      .export-message-body h4 {
+        margin-top: 0.5em;
+        margin-bottom: 0.5em;
+      }
+      .export-message-body h1,
+      .export-message-body h2,
+      .export-message-body h3,
+      .export-message-body h4 {
+        line-height: 1.3;
+        letter-spacing: -0.01em;
+      }
+      .export-message-body code {
+        font-family: 'ui-monospace', 'SF Mono', Menlo, Monaco, monospace;
+        background: #f1f5f9;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        font-size: 0.88em;
+        padding: 0.08em 0.35em;
+      }
+      .export-message-body pre {
+        background: #0f172a;
+        color: #e2e8f0;
+        border-radius: 10px;
+        padding: 10px 12px;
+        overflow-x: auto;
+      }
+      .export-message-body pre code {
+        border: 0;
+        background: transparent;
+        color: inherit;
+        padding: 0;
+      }
+      .export-message-body blockquote {
+        border-left: 3px solid #cbd5e1;
+        margin-left: 0;
+        padding-left: 10px;
+        color: #334155;
+      }
+      .export-message-body table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 11px;
+      }
+      .export-message-body th,
+      .export-message-body td {
+        border: 1px solid #e2e8f0;
+        padding: 6px 8px;
+        vertical-align: top;
+      }
+      .export-message-body th {
+        background: #f8fafc;
+        font-weight: 600;
+      }
+      .export-message-body .katex-display {
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding: 0.2em 0;
+      }
+      .export-message-body button,
+      .export-message-body [aria-label*="Copy"],
+      .export-message-body [title*="Copy"] {
+        display: none !important;
+      }
+      .export-attachments {
+        margin: 0;
+        padding: 0 14px 12px 32px;
+        color: #334155;
+      }
+      .export-attachment-meta {
+        color: #64748b;
+      }
     </style>
   </head>
   <body>
-    <h1>${escapeHtml(activeTitle)}</h1>
-    <p class="muted">Exported ${escapeHtml(new Date().toLocaleString())}</p>
-    ${renderedMessages}
-    <script>
-      window.onload = () => {
-        window.print();
-      };
-    </script>
+    <main class="export-shell">
+      <header class="export-header">
+        <h1 class="export-title">${escapeHtml(activeTitle)}</h1>
+        <p class="export-meta">Exported ${escapeHtml(new Date().toLocaleString())}</p>
+      </header>
+      ${renderedMessages}
+    </main>
   </body>
-</html>`)
-    printableWindow.document.close()
+</html>`
+
+    const printFrame = document.createElement('iframe')
+    printFrame.setAttribute('aria-hidden', 'true')
+    printFrame.style.position = 'fixed'
+    printFrame.style.width = '0'
+    printFrame.style.height = '0'
+    printFrame.style.border = '0'
+    printFrame.style.opacity = '0'
+    printFrame.style.pointerEvents = 'none'
+
+    const cleanupFrame = () => {
+      printFrame.remove()
+    }
+
+    let hasPrinted = false
+
+    printFrame.onload = () => {
+      if (hasPrinted) {
+        return
+      }
+
+      hasPrinted = true
+      const frameWindow = printFrame.contentWindow
+      const frameDocument = printFrame.contentDocument
+      if (!frameWindow || !frameDocument) {
+        cleanupFrame()
+        setErrorMessage('Unable to open print dialog. Please try again.')
+        return
+      }
+
+      // Bring over app/runtime styles (including KaTeX CSS) so markdown and math render correctly in print.
+      const styleNodes = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
+      for (const styleNode of styleNodes) {
+        if (styleNode instanceof HTMLStyleElement) {
+          if (!styleNode.textContent) {
+            continue
+          }
+
+          const clonedStyle = frameDocument.createElement('style')
+          clonedStyle.textContent = styleNode.textContent
+          frameDocument.head.insertBefore(clonedStyle, frameDocument.head.firstChild)
+          continue
+        }
+
+        if (!(styleNode instanceof HTMLLinkElement)) {
+          continue
+        }
+
+        if (!styleNode.href || !styleNode.href.startsWith(window.location.origin)) {
+          continue
+        }
+
+        const clonedLink = frameDocument.createElement('link')
+        clonedLink.rel = 'stylesheet'
+        clonedLink.href = styleNode.href
+        frameDocument.head.insertBefore(clonedLink, frameDocument.head.firstChild)
+      }
+
+      const waitForStyles = Promise.all(
+        Array.from(frameDocument.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')).map(
+          (link) =>
+            new Promise<void>((resolve) => {
+              if (link.sheet) {
+                resolve()
+                return
+              }
+
+              const resolveOnce = () => {
+                link.removeEventListener('load', resolveOnce)
+                link.removeEventListener('error', resolveOnce)
+                resolve()
+              }
+
+              link.addEventListener('load', resolveOnce, { once: true })
+              link.addEventListener('error', resolveOnce, { once: true })
+              frameWindow.setTimeout(resolveOnce, 1200)
+            }),
+        ),
+      )
+
+      const waitForFonts = frameDocument.fonts.ready
+
+      const cleanupAfterPrint = () => {
+        frameWindow.removeEventListener('afterprint', cleanupAfterPrint)
+        frameWindow.clearTimeout(cleanupFallbackTimer)
+        setTimeout(cleanupFrame, 0)
+      }
+
+      const cleanupFallbackTimer = frameWindow.setTimeout(cleanupFrame, 60_000)
+      frameWindow.addEventListener('afterprint', cleanupAfterPrint)
+
+      void Promise.all([waitForStyles, waitForFonts]).then(() => {
+        frameWindow.requestAnimationFrame(() => {
+          frameWindow.requestAnimationFrame(() => {
+            frameWindow.focus()
+            frameWindow.print()
+          })
+        })
+      })
+    }
+
+    printFrame.srcdoc = printableDocument
+    document.body.appendChild(printFrame)
   }
 
   async function handleRenameActiveChat() {
@@ -1194,6 +1789,7 @@ function ChatLanding() {
     setActiveTopic(null)
     setEditingMessageId(null)
     setEditingDraft('')
+    stopGenerationPolling()
     setStreamingMessageId(null)
     resetStream()
   }
@@ -1226,8 +1822,9 @@ function ChatLanding() {
       typeof lastUserMessage?.content === 'string' && webSearchKeywordPattern.test(lastUserMessage.content)
 
     const controller = new AbortController()
+    assistantRequestAbortRef.current = controller
     const timeoutId = window.setTimeout(() => {
-      controller.abort()
+      controller.abort('timeout')
     }, assistantRequestTimeoutMs)
 
     let response: Response
@@ -1255,8 +1852,13 @@ function ChatLanding() {
       })
     } catch (error) {
       window.clearTimeout(timeoutId)
+      assistantRequestAbortRef.current = null
 
       if (error instanceof DOMException && error.name === 'AbortError') {
+        if (controller.signal.reason === 'manual') {
+          return
+        }
+
         setErrorMessage('The assistant took too long to respond. Please try again.')
         return
       }
@@ -1265,6 +1867,7 @@ function ChatLanding() {
     }
 
     window.clearTimeout(timeoutId)
+    assistantRequestAbortRef.current = null
 
     if (!response.ok) {
       let message = 'Unable to send message'
@@ -1282,38 +1885,20 @@ function ChatLanding() {
     }
 
     const payload = (await response.json()) as ChatCompletionResponse
-    const modelThinkingText = payload.message.thinking ?? payload.thinking
-    if (typeof modelThinkingText === 'string' && modelThinkingText.trim()) {
-      setThinkingText(modelThinkingText)
-      setShowThinking(true)
-    }
+    const resolvedSessionId = payload.chatSessionId ?? chatSessionId
+    const generationId = payload.generationId
 
-    const assistantContent = payload.message.content.trim()
-    if (!assistantContent) {
-      setErrorMessage('The assistant returned an empty response')
+    if (!generationId) {
+      setErrorMessage('Unable to start assistant generation')
       return
     }
 
-    const citations = normalizeCitations(payload.message.citations ?? payload.citations)
-    const searchedWeb = Boolean(payload.message.searchedWeb ?? payload.searchedWeb ?? citations.length > 0)
-
-    const nextAssistantMessage = createMessage('assistant', assistantContent, {
-      citations,
-      searchedWeb,
-    })
-
-    const resolvedSessionId = payload.chatSessionId ?? chatSessionId
     touchSession(resolvedSessionId, payload.sessionTitle)
     setActiveSessionId(resolvedSessionId)
 
-    setMessages((previousMessages) => [
-      ...previousMessages,
-      nextAssistantMessage,
-    ])
-
-    resetStream()
-    setStreamingMessageId(nextAssistantMessage.id)
-    addPart(assistantContent)
+    const generationMessageId = `assistant-generation-${generationId}`
+    ensureGenerationMessage(generationMessageId, '')
+    startGenerationPolling(generationId, resolvedSessionId, generationMessageId, '', payload.status)
   }
 
   async function handleCopyMessage(messageId: string, content: string) {
@@ -1376,13 +1961,13 @@ function ChatLanding() {
     try {
       const sessionId = await ensureActiveSession()
       if (!sessionId) {
+        setIsLoading(false)
         return
       }
 
       await requestAssistantReply(updatedHistory, sessionId)
     } catch {
       setErrorMessage('Network error while contacting chat service')
-    } finally {
       setIsLoading(false)
     }
   }
@@ -1411,13 +1996,13 @@ function ChatLanding() {
     try {
       const sessionId = await ensureActiveSession()
       if (!sessionId) {
+        setIsLoading(false)
         return
       }
 
       await requestAssistantReply(historyBeforeAssistant, sessionId)
     } catch {
       setErrorMessage('Network error while contacting chat service')
-    } finally {
       setIsLoading(false)
     }
   }
@@ -1446,13 +2031,13 @@ function ChatLanding() {
     try {
       const sessionId = await ensureActiveSession()
       if (!sessionId) {
+        setIsLoading(false)
         return
       }
 
       await requestAssistantReply(history, sessionId)
     } catch {
       setErrorMessage('Network error while contacting chat service')
-    } finally {
       setIsLoading(false)
     }
   }
@@ -1480,6 +2065,7 @@ function ChatLanding() {
         className="relative ml-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-[24px] border border-[#E5E5E5] bg-white shadow-sm transition-all duration-300 md:ml-3 dark:border-white/10 dark:bg-[#212121]"
       >
         <ChatHeader
+          chatTitle={activeChatTitle}
           onCopyLink={handleCopyShareLink}
           onExportPdf={handleExportPdf}
           onExportMarkdown={handleExportMarkdown}
@@ -1505,9 +2091,9 @@ function ChatLanding() {
                 prompt={prompt}
                 onPromptChange={setPrompt}
                 onSubmit={(files) => void submitPrompt(undefined, files)}
+                onStop={handleStopAssistantResponse}
                 isLoading={isLoading}
                 selectedModel={selectedModel}
-                modelOptions={modelOptions}
                 onModelChange={setSelectedModel}
                 webSearchActive={webSearchActive}
                 onWebSearchChange={setWebSearchActive}
@@ -1524,7 +2110,7 @@ function ChatLanding() {
                       key={topic}
                       type="button"
                       onClick={() => setActiveTopic(topic)}
-                      className={`rounded-[12px] border px-3.5 py-2 text-[14px] font-medium transition-colors ${isActive ? 'border-gray-300 bg-gray-100 text-black' : 'border-[#E5E5E5] text-black hover:bg-gray-50'}`}
+                      className={`rounded-[12px] border px-3.5 py-2 text-[14px] font-medium transition-colors ${isActive ? 'border-transparent bg-[#F3F4F6] text-slate-900 shadow-[inset_0_0_0_1px_rgba(148,163,184,0.28)] dark:bg-[#353535] dark:text-slate-100 dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]' : 'border-[#E5E5E5] text-slate-900 hover:bg-gray-50 dark:text-slate-100 dark:hover:bg-[#2f2f2f]'}`}
                     >
                       {topic}
                     </button>
@@ -1552,7 +2138,7 @@ function ChatLanding() {
               ref={messageListRef}
               className="min-h-0 flex-1 overflow-y-auto pb-16 [&::-webkit-scrollbar-thumb]:rounded-[10px] [&::-webkit-scrollbar-thumb]:bg-[#E5E7EB] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1.5"
             >
-              <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-8 pt-8 pb-4">
+              <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-start gap-8 pt-8 pb-4">
                 {messages.map((message) =>
                   message.role === 'user' ? (
                     <div key={message.id} className="group relative flex w-full flex-col items-end">
@@ -1640,15 +2226,26 @@ function ChatLanding() {
                     <div key={message.id} className="group w-full max-w-[90%]">
                       <div className="pt-1 text-[15px] leading-relaxed text-gray-800">
                         {(() => {
+                          const renderedContent =
+                            streamingMessageId === message.id
+                              ? (stream || message.content)
+                              : message.content
+                          const hasRenderableContent = renderedContent.trim().length > 0
                           const hasCitations = Boolean(message.citations && message.citations.length > 0)
+                          const showActions = hasRenderableContent || hasCitations
 
                           return (
                             <>
-                        <Markdown className="prose-p:my-3 first:prose-p:mt-0 last:prose-p:mb-0">
-                          {streamingMessageId === message.id ? stream : message.content}
-                        </Markdown>
+                        {hasRenderableContent ? (
+                          <div data-export-assistant-markdown>
+                            <Markdown className="prose-p:my-3 first:prose-p:mt-0 last:prose-p:mb-0">
+                              {renderedContent}
+                            </Markdown>
+                          </div>
+                        ) : null}
 
-                        <div className={`mt-2 flex items-center gap-2 transition-opacity duration-200 ${hasCitations ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+                        {showActions ? (
+                          <div className="mt-2 flex items-center gap-2 opacity-100 transition-opacity duration-200">
                           {hasCitations ? (
                             <CitationList
                               id={`assistant-citations-${message.id}`}
@@ -1682,7 +2279,8 @@ function ChatLanding() {
                           >
                             <RotateCcw className="size-3.5" />
                           </button>
-                        </div>
+                          </div>
+                        ) : null}
                             </>
                           )
                         })()}
@@ -1691,7 +2289,7 @@ function ChatLanding() {
                   ),
                 )}
 
-                {isLoading && showThinking ? (
+                {isLoading && showThinking && activeStreamingContent.trim().length === 0 ? (
                   <AIThinking className="w-full max-w-[90%] pt-1" text={thinkingText} />
                 ) : null}
               </div>
@@ -1713,9 +2311,9 @@ function ChatLanding() {
                   prompt={prompt}
                   onPromptChange={setPrompt}
                   onSubmit={(files) => void submitPrompt(undefined, files)}
+                  onStop={handleStopAssistantResponse}
                   isLoading={isLoading}
                   selectedModel={selectedModel}
-                  modelOptions={modelOptions}
                   onModelChange={setSelectedModel}
                   webSearchActive={webSearchActive}
                   onWebSearchChange={setWebSearchActive}

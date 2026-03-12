@@ -3,6 +3,7 @@ import { CodeXml, FileText, Link2, Pencil, SquareX, Trash2 } from 'lucide-react'
 import ThemeToggle from '#/components/ThemeToggle'
 
 type ChatHeaderProps = {
+  chatTitle?: string
   onCopyLink: () => void | Promise<void>
   onExportPdf: () => void
   onExportMarkdown: () => void
@@ -12,6 +13,7 @@ type ChatHeaderProps = {
 }
 
 function ChatHeader({
+  chatTitle,
   onCopyLink,
   onExportPdf,
   onExportMarkdown,
@@ -53,6 +55,10 @@ function ChatHeader({
     >
       <div className="flex items-center gap-2 pl-2">
         <span className="text-[20px] font-bold tracking-tight text-gray-900 dark:text-gray-100">LoveChat</span>
+      </div>
+
+      <div className="pointer-events-none absolute left-1/2 max-w-[min(52vw,36rem)] -translate-x-1/2 px-3 text-center">
+        <p className="truncate text-[15px] font-semibold tracking-tight text-gray-800 dark:text-gray-100">{chatTitle ?? 'New chat'}</p>
       </div>
 
       <div className="flex items-center gap-0.5 sm:gap-1">

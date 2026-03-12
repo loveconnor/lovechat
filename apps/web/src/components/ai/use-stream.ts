@@ -27,6 +27,21 @@ export const useStream = () => {
     isAnimatingRef.current = false
   }, [])
 
+  const seed = useCallback((content: string) => {
+    const next = content || ''
+    setParts(next ? [next] : [])
+    setStream(next)
+    streamIndexRef.current = next.length
+
+    if (frame.current) {
+      cancelAnimationFrame(frame.current)
+    }
+
+    frame.current = null
+    lastTimeRef.current = 0
+    isAnimatingRef.current = false
+  }, [])
+
   useEffect(() => {
     if (isAnimatingRef.current) return
 
@@ -63,5 +78,5 @@ export const useStream = () => {
     }
   }, [parts])
 
-  return { stream, addPart, reset }
+  return { stream, addPart, reset, seed }
 }

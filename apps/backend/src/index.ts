@@ -146,6 +146,10 @@ const chatSessionIdParamSchema = z.object({
   sessionId: z.string().uuid(),
 })
 
+const chatGenerationIdParamSchema = z.object({
+  generationId: z.string().uuid(),
+})
+
 const createChatSessionSchema = z.object({
   title: z.string().trim().min(1).max(120).optional(),
 })
@@ -802,6 +806,271 @@ async function getSessionFromRequest(request: FastifyRequest) {
   }
 }
 
+function buildCompletionInput(
+  messages: Array<z.infer<typeof chatMessageSchema>>,
+  activateWebSearch: boolean,
+  activateLearningMode: boolean,
+) {
+  return [
+    {
+      role: 'system' as const,
+      content: baseSystemPrompt,
+    },
+    ...(activateLearningMode
+      ? [
+          {
+            role: 'system' as const,
+            content: learningModeSystemPrompt,
+          },
+        ]
+      : []),
+    ...(activateWebSearch
+      ? [
+          {
+            role: 'system' as const,
+            content: webSearchSystemPrompt,
+          },
+        ]
+      : []),
+    ...messages.map((message) => toOpenAIInputMessage(message)),
+  ]
+}
+
+type GenerationTaskPayload = {
+  generationId: string
+  userId: number
+  chatSessionId: string
+  model: string
+  activateWebSearch: boolean
+  activateLearningMode: boolean
+  messages: Array<z.infer<typeof chatMessageSchema>>
+}
+
+async function markGenerationFailed(generationId: string, message: string) {
+  await pgPool.query(
+    `
+    UPDATE chat_generations
+    SET status = 'failed', error_message = $2, updated_at = NOW(), completed_at = NOW()
+    WHERE id = $1
+    `,
+    [generationId, message],
+  )
+}
+
+async function runGenerationTask(payload: GenerationTaskPayload) {
+  if (!openaiClient) {
+    await markGenerationFailed(payload.generationId, 'OPENAI_API_KEY is not configured on the backend')
+    return
+  }
+
+  await pgPool.query(
+    `
+    UPDATE chat_generations
+    SET status = 'in_progress', updated_at = NOW(), error_message = NULL
+    WHERE id = $1
+    `,
+    [payload.generationId],
+  )
+
+  const tools = payload.activateWebSearch
+    ? [
+        {
+          type: 'web_search' as const,
+        },
+      ]
+    : undefined
+
+  const completionRequest = {
+    model: payload.model,
+    ...(tools ? { tools } : {}),
+    input: buildCompletionInput(payload.messages, payload.activateWebSearch, payload.activateLearningMode),
+  }
+
+  let streamedText = ''
+  let streamedFlushLength = 0
+  let streamedFlushTime = 0
+  let response: unknown = null
+
+  try {
+    const stream = await (openaiClient.responses as any).stream(completionRequest)
+
+    for await (const event of stream as AsyncIterable<{ type?: string; delta?: string }>) {
+      if (event.type !== 'response.output_text.delta' || typeof event.delta !== 'string') {
+        continue
+      }
+
+      streamedText += event.delta
+
+      const shouldFlushByLength = streamedText.length - streamedFlushLength >= 80
+      const now = Date.now()
+      const shouldFlushByTime = now - streamedFlushTime >= 600
+
+      if (shouldFlushByLength || shouldFlushByTime) {
+        await pgPool.query(
+          `
+          UPDATE chat_generations
+          SET response_text = $2, updated_at = NOW()
+          WHERE id = $1
+          `,
+          [payload.generationId, streamedText],
+        )
+        streamedFlushLength = streamedText.length
+        streamedFlushTime = now
+      }
+    }
+
+    response = await stream.finalResponse()
+  } catch (streamError) {
+    app.log.warn(
+      {
+        generationId: payload.generationId,
+        error: streamError,
+      },
+      'openai streaming unavailable; falling back to non-streaming response',
+    )
+
+    response = await openaiClient.responses.create(completionRequest)
+  }
+
+  const responseRecord = response as {
+    output?: unknown
+    output_text?: string
+  }
+
+  const extracted = extractTextAndCitations(responseRecord.output, responseRecord)
+  const modelThinking = extractModelThinking(responseRecord.output)
+  const fallbackText = typeof responseRecord.output_text === 'string' ? responseRecord.output_text.trim() : ''
+  const rawText = extracted.text || fallbackText || streamedText
+  const text = sanitizeAssistantText(rawText)
+  const assistantSearchedWeb = extracted.searchedWeb || extracted.citations.length > 0
+
+  if (!text) {
+    await markGenerationFailed(payload.generationId, 'OpenAI returned an empty response')
+    return
+  }
+
+  const sessionTitle = buildSessionTitle(payload.messages, text)
+
+  const dbClient = await pgPool.connect()
+  try {
+    await dbClient.query('BEGIN')
+
+    const updatedSessionResult = await dbClient.query<{ title: string }>(
+      `
+      UPDATE chat_conversations
+      SET
+        title = CASE
+          WHEN title = 'New chat' THEN $2
+          ELSE title
+        END,
+        updated_at = NOW()
+      WHERE id = $1
+      RETURNING title
+      `,
+      [payload.chatSessionId, sessionTitle],
+    )
+
+    const persistedSessionTitle = updatedSessionResult.rows[0]?.title ?? sessionTitle
+
+    await dbClient.query('DELETE FROM chat_messages WHERE conversation_id = $1', [payload.chatSessionId])
+
+    const persistedMessages = [
+      ...payload.messages
+        .filter((message) => message.role === 'user' || message.role === 'assistant')
+        .map((message) => ({
+          role: message.role as 'user' | 'assistant',
+          content: message.content,
+          attachments:
+            message.role === 'user'
+              ? sanitizeAttachmentsForStorage(message.attachments ?? [])
+              : [],
+          citations: Array.isArray(message.citations) ? message.citations : [],
+          searchedWeb: Boolean(message.searchedWeb),
+          thinking: null as string | null,
+          model: payload.model,
+        })),
+      {
+        role: 'assistant' as const,
+        content: text,
+        attachments: [],
+        citations: extracted.citations,
+        searchedWeb: assistantSearchedWeb,
+        thinking: modelThinking,
+        model: payload.model,
+      },
+    ]
+
+    for (const message of persistedMessages) {
+      await dbClient.query(
+        `
+        INSERT INTO chat_messages (
+          conversation_id,
+          user_id,
+          role,
+          content,
+          model,
+          attachments_json,
+          citations_json,
+          searched_web,
+          thinking_text
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9)
+        `,
+        [
+          payload.chatSessionId,
+          payload.userId,
+          message.role,
+          message.content,
+          message.model,
+          JSON.stringify(message.attachments),
+          JSON.stringify(message.citations),
+          message.searchedWeb,
+          message.thinking,
+        ],
+      )
+    }
+
+    await dbClient.query(
+      `
+      UPDATE chat_generations
+      SET
+        status = 'completed',
+        response_text = $2,
+        citations_json = $3::jsonb,
+        searched_web = $4,
+        thinking_text = $5,
+        error_message = NULL,
+        updated_at = NOW(),
+        completed_at = NOW()
+      WHERE id = $1
+      `,
+      [
+        payload.generationId,
+        text,
+        JSON.stringify(extracted.citations),
+        assistantSearchedWeb,
+        modelThinking,
+      ],
+    )
+
+    await dbClient.query('COMMIT')
+
+    app.log.info(
+      {
+        generationId: payload.generationId,
+        sessionId: payload.chatSessionId,
+        sessionTitle: persistedSessionTitle,
+      },
+      'chat generation completed',
+    )
+  } catch (dbError) {
+    await dbClient.query('ROLLBACK')
+    throw dbError
+  } finally {
+    dbClient.release()
+  }
+}
+
 app.get('/health', async () => {
   await Promise.all([checkPostgresConnection(), checkRedisConnection()])
 
@@ -1078,12 +1347,25 @@ app.get('/chat/sessions', async (request, reply) => {
       title: string
       created_at: string
       updated_at: string
+      generation_status: 'queued' | 'in_progress' | null
     }>(
       `
-      SELECT id, title, created_at, updated_at
-      FROM chat_conversations
-      WHERE user_id = $1
-      ORDER BY updated_at DESC
+      SELECT
+        c.id,
+        c.title,
+        c.created_at,
+        c.updated_at,
+        g.status AS generation_status
+      FROM chat_conversations c
+      LEFT JOIN LATERAL (
+        SELECT status
+        FROM chat_generations
+        WHERE conversation_id = c.id AND user_id = c.user_id AND status IN ('queued', 'in_progress')
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) g ON TRUE
+      WHERE c.user_id = $1
+      ORDER BY c.updated_at DESC
       `,
       [session.userId],
     )
@@ -1094,6 +1376,7 @@ app.get('/chat/sessions', async (request, reply) => {
         title: row.title,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        generationStatus: row.generation_status,
       })),
     })
   } catch (error) {
@@ -1192,15 +1475,42 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
       role: 'user' | 'assistant'
       content: string
       attachments_json: unknown
+      citations_json: unknown
+      searched_web: boolean
+      thinking_text: string | null
     }>(
       `
-      SELECT role, content, attachments_json
+      SELECT role, content, attachments_json, citations_json, searched_web, thinking_text
       FROM chat_messages
       WHERE conversation_id = $1
       ORDER BY created_at ASC, id ASC
       `,
       [sessionId],
     )
+
+    const activeGenerationResult = await pgPool.query<{
+      id: string
+      status: 'queued' | 'in_progress'
+      response_text: string
+      citations_json: unknown
+      searched_web: boolean
+      thinking_text: string | null
+      error_message: string | null
+      created_at: string
+      updated_at: string
+      completed_at: string | null
+    }>(
+      `
+      SELECT id, status, response_text, citations_json, searched_web, thinking_text, error_message, created_at, updated_at, completed_at
+      FROM chat_generations
+      WHERE conversation_id = $1 AND user_id = $2 AND status IN ('queued', 'in_progress')
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      [sessionId, session.userId],
+    )
+
+    const activeGeneration = activeGenerationResult.rows[0]
 
     return reply.send({
       session: {
@@ -1215,8 +1525,34 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
         ...(Array.isArray(message.attachments_json) && message.attachments_json.length > 0
           ? { attachments: message.attachments_json }
           : {}),
-        searchedWeb: false,
+        ...(Array.isArray(message.citations_json) && message.citations_json.length > 0
+          ? { citations: message.citations_json }
+          : {}),
+        searchedWeb: Boolean(message.searched_web),
+        ...(typeof message.thinking_text === 'string' && message.thinking_text.trim()
+          ? { thinking: message.thinking_text }
+          : {}),
       })),
+      ...(activeGeneration
+        ? {
+            activeGeneration: {
+              id: activeGeneration.id,
+              status: activeGeneration.status,
+              content: activeGeneration.response_text,
+              citations: Array.isArray(activeGeneration.citations_json) ? activeGeneration.citations_json : [],
+              searchedWeb: Boolean(activeGeneration.searched_web),
+              ...(typeof activeGeneration.thinking_text === 'string' && activeGeneration.thinking_text.trim()
+                ? { thinking: activeGeneration.thinking_text }
+                : {}),
+              ...(typeof activeGeneration.error_message === 'string' && activeGeneration.error_message.trim()
+                ? { errorMessage: activeGeneration.error_message }
+                : {}),
+              createdAt: activeGeneration.created_at,
+              updatedAt: activeGeneration.updated_at,
+              completedAt: activeGeneration.completed_at,
+            },
+          }
+        : {}),
     })
   } catch (error) {
     if (error instanceof ZodError) {
@@ -1353,61 +1689,11 @@ app.post('/chat/completions', async (request, reply) => {
     const activateLearningMode = Boolean(body.useLearningMode)
     const requestedSessionId = body.chatSessionId
 
-    const tools = activateWebSearch
-      ? [
-          {
-            type: 'web_search' as const,
-          },
-        ]
-      : undefined
-
-    const completionInput = [
-      {
-        role: 'system' as const,
-        content: baseSystemPrompt,
-      },
-      ...(activateLearningMode
-        ? [
-            {
-              role: 'system' as const,
-              content: learningModeSystemPrompt,
-            },
-          ]
-        : []),
-      ...(activateWebSearch
-        ? [
-            {
-              role: 'system' as const,
-              content: webSearchSystemPrompt,
-            },
-          ]
-        : []),
-      ...body.messages.map((message) => toOpenAIInputMessage(message)),
-    ]
-
-    const completionRequest = {
-      model,
-      ...(tools ? { tools } : {}),
-      input: completionInput,
-    }
-
-    const response = await openaiClient.responses.create(completionRequest)
-
-    const extracted = extractTextAndCitations(response.output, response)
-    const modelThinking = extractModelThinking(response.output)
-    const rawText = extracted.text || response.output_text.trim()
-    const text = sanitizeAssistantText(rawText)
-    const assistantSearchedWeb = extracted.searchedWeb || extracted.citations.length > 0
-
-    if (!text) {
-      return reply.code(502).send({
-        message: 'OpenAI returned an empty response',
-      })
-    }
-
     let chatSessionId = requestedSessionId ?? randomUUID()
-    const sessionTitle = buildSessionTitle(body.messages, text)
-    let persistedSessionTitle = sessionTitle
+    const sessionTitleHint = buildSessionTitle(body.messages)
+    let persistedSessionTitle = sessionTitleHint
+    let generationId: string = randomUUID()
+    let generationStatus: 'queued' | 'in_progress' = 'queued'
 
     const dbClient = await pgPool.connect()
     try {
@@ -1438,7 +1724,52 @@ app.post('/chat/completions', async (request, reply) => {
           INSERT INTO chat_conversations (id, user_id, title)
           VALUES ($1, $2, $3)
           `,
-          [chatSessionId, session.userId, sessionTitle],
+          [chatSessionId, session.userId, sessionTitleHint],
+        )
+      }
+
+      const existingGenerationResult = await dbClient.query<{
+        id: string
+        status: 'queued' | 'in_progress'
+      }>(
+        `
+        SELECT id, status
+        FROM chat_generations
+        WHERE conversation_id = $1 AND user_id = $2 AND status IN ('queued', 'in_progress')
+        ORDER BY created_at DESC
+        LIMIT 1
+        `,
+        [chatSessionId, session.userId],
+      )
+
+      const existingGeneration = existingGenerationResult.rows[0]
+      if (existingGeneration) {
+        generationId = existingGeneration.id
+        generationStatus = existingGeneration.status
+      } else {
+        await dbClient.query(
+          `
+          INSERT INTO chat_generations (
+            id,
+            conversation_id,
+            user_id,
+            model,
+            use_web_search,
+            use_learning_mode,
+            input_messages_json,
+            status
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, 'queued')
+          `,
+          [
+            generationId,
+            chatSessionId,
+            session.userId,
+            model,
+            activateWebSearch,
+            activateLearningMode,
+            JSON.stringify(body.messages),
+          ],
         )
       }
 
@@ -1454,7 +1785,7 @@ app.post('/chat/completions', async (request, reply) => {
         WHERE id = $1
         RETURNING title
         `,
-        [chatSessionId, sessionTitle],
+        [chatSessionId, sessionTitleHint],
       )
 
       const updatedSession = updatedSessionResult.rows[0]
@@ -1462,46 +1793,35 @@ app.post('/chat/completions', async (request, reply) => {
         persistedSessionTitle = updatedSession.title
       }
 
-      await dbClient.query('DELETE FROM chat_messages WHERE conversation_id = $1', [chatSessionId])
-
-      const persistedMessages = [
-        ...body.messages
-          .filter((message) => message.role === 'user' || message.role === 'assistant')
-          .map((message) => ({
-          role: message.role as 'user' | 'assistant',
-          content: message.content,
-          attachments:
-            message.role === 'user'
-              ? sanitizeAttachmentsForStorage(message.attachments ?? [])
-              : [],
-          model: model,
-        })),
-        {
-          role: 'assistant' as const,
-          content: text,
-          attachments: [],
-          model,
-        },
-      ]
-
-      for (const message of persistedMessages) {
-        await dbClient.query(
-          `
-          INSERT INTO chat_messages (conversation_id, user_id, role, content, model, attachments_json)
-          VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-          `,
-          [
-            chatSessionId,
-            session.userId,
-            message.role,
-            message.content,
-            message.model,
-            JSON.stringify(message.attachments),
-          ],
-        )
-      }
-
       await dbClient.query('COMMIT')
+
+      if (generationStatus === 'queued') {
+        void runGenerationTask({
+          generationId,
+          userId: session.userId,
+          chatSessionId,
+          model,
+          activateWebSearch,
+          activateLearningMode,
+          messages: body.messages,
+        }).catch(async (generationError) => {
+          const fallbackMessage =
+            generationError instanceof Error && generationError.message
+              ? generationError.message
+              : 'Unable to complete chat response'
+
+          request.log.error(
+            {
+              generationId,
+              message: fallbackMessage,
+              stack: generationError instanceof Error ? generationError.stack : undefined,
+            },
+            'chat generation failed',
+          )
+
+          await markGenerationFailed(generationId, fallbackMessage)
+        })
+      }
     } catch (dbError) {
       await dbClient.query('ROLLBACK')
       throw dbError
@@ -1510,18 +1830,10 @@ app.post('/chat/completions', async (request, reply) => {
     }
 
     return reply.send({
-      message: {
-        role: 'assistant',
-        content: text,
-        citations: extracted.citations,
-        searchedWeb: assistantSearchedWeb,
-        thinking: modelThinking,
-      },
+      generationId,
+      status: generationStatus,
       chatSessionId,
       sessionTitle: persistedSessionTitle,
-      citations: extracted.citations,
-      searchedWeb: assistantSearchedWeb,
-      thinking: modelThinking,
     })
   } catch (error) {
     if (error instanceof ZodError) {
@@ -1541,6 +1853,95 @@ app.post('/chat/completions', async (request, reply) => {
     request.log.error(error)
     return reply.code(500).send({
       message: 'Unable to complete chat response',
+    })
+  }
+})
+
+app.get('/chat/generations/:generationId', async (request, reply) => {
+  try {
+    const session = await getSessionFromRequest(request)
+    if (!session) {
+      return reply.code(401).send({
+        message: 'Unauthorized',
+      })
+    }
+
+    const { generationId } = chatGenerationIdParamSchema.parse(request.params)
+
+    const result = await pgPool.query<{
+      id: string
+      conversation_id: string
+      status: 'queued' | 'in_progress' | 'completed' | 'failed'
+      response_text: string
+      citations_json: unknown
+      searched_web: boolean
+      thinking_text: string | null
+      error_message: string | null
+      created_at: string
+      updated_at: string
+      completed_at: string | null
+      session_title: string
+    }>(
+      `
+      SELECT
+        g.id,
+        g.conversation_id,
+        g.status,
+        g.response_text,
+        g.citations_json,
+        g.searched_web,
+        g.thinking_text,
+        g.error_message,
+        g.created_at,
+        g.updated_at,
+        g.completed_at,
+        c.title AS session_title
+      FROM chat_generations g
+      INNER JOIN chat_conversations c ON c.id = g.conversation_id
+      WHERE g.id = $1 AND g.user_id = $2
+      LIMIT 1
+      `,
+      [generationId, session.userId],
+    )
+
+    const generation = result.rows[0]
+    if (!generation) {
+      return reply.code(404).send({
+        message: 'Generation not found',
+      })
+    }
+
+    return reply.send({
+      generation: {
+        id: generation.id,
+        chatSessionId: generation.conversation_id,
+        sessionTitle: generation.session_title,
+        status: generation.status,
+        content: generation.response_text,
+        citations: Array.isArray(generation.citations_json) ? generation.citations_json : [],
+        searchedWeb: Boolean(generation.searched_web),
+        ...(typeof generation.thinking_text === 'string' && generation.thinking_text.trim()
+          ? { thinking: generation.thinking_text }
+          : {}),
+        ...(typeof generation.error_message === 'string' && generation.error_message.trim()
+          ? { errorMessage: generation.error_message }
+          : {}),
+        createdAt: generation.created_at,
+        updatedAt: generation.updated_at,
+        completedAt: generation.completed_at,
+      },
+    })
+  } catch (error) {
+    if (error instanceof ZodError) {
+      return reply.code(400).send({
+        message: 'Invalid generation id',
+        issues: error.issues,
+      })
+    }
+
+    request.log.error(error)
+    return reply.code(500).send({
+      message: 'Unable to load generation status',
     })
   }
 })

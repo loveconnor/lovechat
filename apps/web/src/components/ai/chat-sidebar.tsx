@@ -1,4 +1,4 @@
-import { Ellipsis, LogOut, Pencil, Plus, Search, Settings, Trash2, UserRound } from 'lucide-react'
+import { Ellipsis, Loader2, LogOut, Pencil, Plus, Search, Settings, Trash2, UserRound } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '#/components/ui/menu'
 
@@ -7,6 +7,7 @@ type ChatSidebarSession = {
   title: string
   createdAt: string
   updatedAt: string
+  generationStatus?: 'queued' | 'in_progress' | null
 }
 
 type ChatSidebarProps = {
@@ -284,11 +285,13 @@ function ChatSidebar({
                   <ul className="space-y-0.5">
                     {bucketSessions.map((session) => {
                       const isActive = session.id === activeSessionId
+                      const isGenerating =
+                        session.generationStatus === 'queued' || session.generationStatus === 'in_progress'
 
                       return (
                         <li
                           key={session.id}
-                          className={`group flex items-center rounded-lg transition-colors ${isActive ? 'bg-[#E5E7EB] dark:bg-[#3a3a3a]' : 'hover:bg-[#E5E7EB] dark:hover:bg-[#2f2f2f]'}`}
+                          className={`group/session flex items-center rounded-lg transition-colors ${isActive ? 'bg-[#E5E7EB] dark:bg-[#3a3a3a]' : 'hover:bg-[#E5E7EB] dark:hover:bg-[#2f2f2f]'}`}
                         >
                           {editingSessionId === session.id ? (
                             <input
@@ -320,10 +323,16 @@ function ChatSidebar({
                             </button>
                           )}
 
+                          {isGenerating ? (
+                            <span className="mr-1 inline-flex items-center text-gray-500 dark:text-gray-300" aria-label="Generating response">
+                              <Loader2 className="size-3.5 animate-spin" />
+                            </span>
+                          ) : null}
+
                           <Menu>
                             <MenuTrigger
                               aria-label="Chat options"
-                              className="ghost-icon-btn mr-1 rounded p-1 text-gray-500 opacity-0 transition-all hover:text-gray-800 group-hover:opacity-100 focus-visible:opacity-100 dark:text-gray-400 dark:hover:text-gray-100"
+                              className="ghost-icon-btn mr-1 rounded p-1 text-gray-500 opacity-0 transition-all hover:text-gray-800 group-hover/session:opacity-100 focus-visible:opacity-100 dark:text-gray-400 dark:hover:text-gray-100"
                             >
                               <Ellipsis className="size-3.5" />
                             </MenuTrigger>
@@ -373,13 +382,6 @@ function ChatSidebar({
               sideOffset={8}
               className="w-56 overflow-hidden rounded-[16px] border border-[#E5E5E5] bg-white p-1.5 shadow-[0_4px_24px_rgba(0,0,0,0.08)] dark:border-white/10 dark:bg-[#2f2f2f]"
             >
-              <MenuItem
-                className="cursor-pointer gap-2.5 rounded-[10px] px-3 py-2 text-[14px] text-gray-700 data-highlighted:bg-gray-50 data-highlighted:text-gray-700 dark:text-gray-200 dark:data-highlighted:bg-white/10 dark:data-highlighted:text-gray-100"
-                onClick={onOpenProfile}
-              >
-                <UserRound className="size-4" />
-                Profile
-              </MenuItem>
               <MenuItem
                 className="cursor-pointer gap-2.5 rounded-[10px] px-3 py-2 text-[14px] text-gray-700 data-highlighted:bg-gray-50 data-highlighted:text-gray-700 dark:text-gray-200 dark:data-highlighted:bg-white/10 dark:data-highlighted:text-gray-100"
                 onClick={onOpenSettings}
