@@ -449,6 +449,7 @@ function ChatLanding() {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [editingDraft, setEditingDraft] = useState('')
   const [webSearchActive, setWebSearchActive] = useState(false)
+  const [learningModeActive, setLearningModeActive] = useState(false)
   const [thinkingText, setThinkingText] = useState(defaultThinkingText)
   const [showThinking, setShowThinking] = useState(false)
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
@@ -1001,6 +1002,7 @@ function ChatLanding() {
         body: JSON.stringify({
           model: selectedModel,
           useWebSearch: webSearchActive || keywordActivatedWebSearch,
+          useLearningMode: learningModeActive,
           chatSessionId,
           messages: recentHistory.map((message) => ({
             role: message.role,
@@ -1262,6 +1264,8 @@ function ChatLanding() {
                 onModelChange={setSelectedModel}
                 webSearchActive={webSearchActive}
                 onWebSearchChange={setWebSearchActive}
+                learningModeActive={learningModeActive}
+                onLearningModeChange={setLearningModeActive}
               />
 
               <div className="z-10 mt-5 flex w-full flex-wrap items-center justify-center gap-3">
@@ -1468,6 +1472,8 @@ function ChatLanding() {
                   onModelChange={setSelectedModel}
                   webSearchActive={webSearchActive}
                   onWebSearchChange={setWebSearchActive}
+                  learningModeActive={learningModeActive}
+                  onLearningModeChange={setLearningModeActive}
                 />
               </div>
             </div>

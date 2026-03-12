@@ -12,6 +12,8 @@ type ChatInputProps = {
   onModelChange: (model: string) => void
   webSearchActive: boolean
   onWebSearchChange: (active: boolean) => void
+  learningModeActive: boolean
+  onLearningModeChange: (active: boolean) => void
 }
 
 type UploadedFile = {
@@ -57,6 +59,8 @@ function ChatInput({
   onModelChange,
   webSearchActive,
   onWebSearchChange,
+  learningModeActive,
+  onLearningModeChange,
 }: ChatInputProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
@@ -362,6 +366,35 @@ function ChatInput({
                   <span className="flex-1 text-left font-medium">Web Search</span>
                   <Check className={`size-4 text-blue-500 dark:text-blue-300 ${webSearchActive ? '' : 'hidden'}`} />
                 </button>
+
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onLearningModeChange(!learningModeActive)
+                  }}
+                  className="mt-0.5 flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-[14px] text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-white/10"
+                >
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-purple-50 dark:bg-purple-900/30">
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="#A855F7"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
+                      <path d="M6 12v5c3 3 9 3 12 0v-5" />
+                    </svg>
+                  </div>
+                  <span className="flex-1 text-left font-medium">Learning Mode</span>
+                  <Check className={`size-4 text-purple-500 ${learningModeActive ? '' : 'hidden'}`} />
+                </button>
               </div>
             </div>
 
@@ -374,6 +407,36 @@ function ChatInput({
                   onClick={() => onWebSearchChange(false)}
                   className="ml-0.5 flex shrink-0 items-center justify-center text-[#93C5FD] transition-colors hover:text-[#2563EB] dark:text-blue-300/70 dark:hover:text-blue-200"
                   aria-label="Disable web search"
+                >
+                  <X className="size-3.5" />
+                </button>
+              </div>
+            ) : null}
+
+            {learningModeActive ? (
+              <div className="flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] border border-[#E9D5FF] bg-[#FAF5FF] px-2.5 text-[13px] text-[#9333EA] dark:border-purple-800/50 dark:bg-purple-900/30 dark:text-purple-400">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="shrink-0"
+                  aria-hidden="true"
+                >
+                  <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
+                  <path d="M6 12v5c3 3 9 3 12 0v-5" />
+                </svg>
+                <span className="font-medium whitespace-nowrap">Learning Mode</span>
+                <button
+                  type="button"
+                  onClick={() => onLearningModeChange(false)}
+                  className="ml-0.5 flex shrink-0 items-center justify-center text-[#C084FC] transition-colors hover:text-[#9333EA] dark:text-purple-500 dark:hover:text-purple-300"
+                  aria-label="Disable learning mode"
                 >
                   <X className="size-3.5" />
                 </button>
