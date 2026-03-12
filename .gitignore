@@ -16,3 +16,4 @@ build/
 .env.*
 __unconfig*
 todos.json
+.github/
