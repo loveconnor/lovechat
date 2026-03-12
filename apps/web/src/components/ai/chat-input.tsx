@@ -313,7 +313,7 @@ function ChatInput({
             <button
               type="button"
               onClick={handleOpenFilePicker}
-              className="flex h-8 w-8 items-center justify-center rounded-full border border-[#E5E5E5] text-[#6B7280] transition-colors hover:bg-gray-50 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/10"
+              className="ghost-icon-btn flex h-8 w-8 items-center justify-center rounded-full border border-[#E5E5E5] text-[#6B7280] transition-colors hover:text-gray-900 dark:border-white/10 dark:text-gray-300 dark:hover:text-gray-100"
               aria-label="Upload files"
             >
               <Plus className="size-4" />
@@ -482,7 +482,7 @@ function ChatInput({
               type="button"
               onClick={handleSubmit}
               disabled={isSubmitDisabled}
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#E5E5E5] text-[#6B7280] transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/10"
+              className="ghost-icon-btn flex h-8 w-8 items-center justify-center rounded-lg border border-[#E5E5E5] text-[#6B7280] transition-colors hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:text-gray-300 dark:hover:text-gray-100"
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -527,7 +527,7 @@ function ChatInput({
               <button
                 type="button"
                 onClick={handleClosePreview}
-                className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-800 dark:text-gray-400 dark:hover:bg-white/10 dark:hover:text-gray-100"
+                className="ghost-icon-btn rounded-lg p-1.5 text-gray-400 transition-colors hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100"
                 aria-label="Close file preview"
               >
                 <X className="size-[18px]" />

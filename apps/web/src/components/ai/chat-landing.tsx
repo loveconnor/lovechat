@@ -1219,27 +1219,28 @@ function ChatLanding() {
   }
 
   return (
-    <main className="lovechat-shell flex h-screen overflow-hidden bg-white text-gray-900">
+    <main className="lovechat-shell flex h-screen overflow-hidden bg-[#F9FAFB] p-2 text-gray-900 transition-colors duration-200 md:p-3 dark:bg-[#171717] dark:text-gray-100">
       <ChatSidebar
         isOpen={sidebarOpen}
         isSessionsLoading={isSessionsLoading}
-        chatSessions={chatSessions}
         groupedSessions={groupedSessions}
         activeSessionId={activeSessionId}
+        avatarInitials={avatarInitials}
+        profileName={avatarNameSource || 'Your Profile'}
+        onToggleSidebar={() => setSidebarOpen((current) => !current)}
+        onOpenProfile={handleOpenProfile}
+        onOpenSettings={handleOpenSettings}
+        onLogout={handleLogout}
         onCreateNewChat={handleCreateNewChat}
         onOpenSession={openSession}
         onRenameSession={handleRenameSession}
         onDeleteSessionIntent={setSessionIdPendingDelete}
       />
 
-      <div className="relative flex min-w-0 flex-1 flex-col">
-        <ChatHeader
-          avatarInitials={avatarInitials}
-          onToggleSidebar={() => setSidebarOpen((current) => !current)}
-          onOpenProfile={handleOpenProfile}
-          onOpenSettings={handleOpenSettings}
-          onLogout={handleLogout}
-        />
+      <div
+        className="relative ml-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-[24px] border border-[#E5E5E5] bg-white shadow-sm transition-all duration-300 md:ml-3 dark:border-white/10 dark:bg-[#212121]"
+      >
+        <ChatHeader />
 
         <section className="flex min-h-0 flex-1 flex-col px-4 pt-16 pb-6">
         <div className={`flex min-h-0 w-full flex-1 flex-col ${messages.length === 0 ? 'justify-center' : ''}`}>
