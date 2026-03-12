@@ -418,11 +418,11 @@ function ChatInput({
                   }}
                   className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-[14px] text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-white/10"
                 >
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 dark:bg-blue-500/15">
-                    <Globe className="size-3.5 text-blue-500 dark:text-blue-300" />
+                  <div className="lovechat-accent-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-full">
+                    <Globe className="size-3.5" />
                   </div>
                   <span className="flex-1 text-left font-medium">Web Search</span>
-                  <Check className={`size-4 text-blue-500 dark:text-blue-300 ${webSearchActive ? '' : 'hidden'}`} />
+                  <Check className={`lovechat-accent-text size-4 ${webSearchActive ? '' : 'hidden'}`} />
                 </button>
 
                 <button
@@ -457,13 +457,13 @@ function ChatInput({
             </div>
 
             {webSearchActive ? (
-              <div className="flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] border border-[#BFDBFE] bg-[#EFF6FF] px-2.5 text-[13px] text-[#2563EB] dark:border-blue-400/30 dark:bg-blue-500/12 dark:text-blue-300">
+              <div className="lovechat-accent-chip flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] px-2.5 text-[13px]">
                 <Globe className="size-3.5 shrink-0" />
                 <span className="font-medium whitespace-nowrap">Web Search</span>
                 <button
                   type="button"
                   onClick={() => onWebSearchChange(false)}
-                  className="ml-0.5 flex shrink-0 items-center justify-center text-[#93C5FD] transition-colors hover:text-[#2563EB] dark:text-blue-300/70 dark:hover:text-blue-200"
+                  className="lovechat-accent-chip-dismiss ml-0.5 flex shrink-0 items-center justify-center transition-colors"
                   aria-label="Disable web search"
                 >
                   <X className="size-3.5" />
@@ -511,7 +511,7 @@ function ChatInput({
               disabled={isLoading ? !isStopEnabled : isSubmitDisabled}
               aria-label={isLoading ? 'Stop response' : 'Send message'}
               title={isLoading ? 'Stop response' : 'Send message'}
-              className="ghost-icon-btn flex h-8 w-8 items-center justify-center rounded-lg border border-[#E5E5E5] text-[#6B7280] transition-colors hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:text-gray-300 dark:hover:text-gray-100"
+              className="lovechat-accent-button flex h-8 w-8 items-center justify-center rounded-lg border border-transparent shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isLoading ? (
                 <Square className="size-3.5 fill-current" />

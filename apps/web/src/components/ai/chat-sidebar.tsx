@@ -1,6 +1,7 @@
-import { Ellipsis, Loader2, LogOut, Pencil, Plus, Search, Settings, Trash2, UserRound } from 'lucide-react'
+import { Ellipsis, Loader2, LogOut, Pencil, Plus, Search, Settings, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '#/components/ui/menu'
+import { SettingsDialog } from './settings-dialog'
 
 type ChatSidebarSession = {
   id: string
@@ -16,10 +17,14 @@ type ChatSidebarProps = {
   groupedSessions: Record<string, ChatSidebarSession[]>
   activeSessionId: string | null
   avatarInitials: string
+  avatarImageSrc: string | null
   profileName: string
+  profileFullName: string
+  profileNickname: string
   onToggleSidebar: () => void
   onOpenProfile: () => void
-  onOpenSettings: () => void
+  onOpenSettings?: () => void
+  onProfileUpdated?: (profile: { fullName: string; nickname: string; avatarDataUrl: string | null }) => void
   onLogout: () => void
   onCreateNewChat: () => Promise<void>
   onOpenSession: (sessionId: string) => Promise<void>
@@ -33,10 +38,12 @@ function ChatSidebar({
   groupedSessions,
   activeSessionId,
   avatarInitials,
+  avatarImageSrc,
   profileName,
+  profileFullName,
+  profileNickname,
   onToggleSidebar,
-  onOpenProfile,
-  onOpenSettings,
+  onProfileUpdated,
   onLogout,
   onCreateNewChat,
   onOpenSession,
@@ -47,6 +54,7 @@ function ChatSidebar({
   const [editingDraft, setEditingDraft] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [showSearchInput, setShowSearchInput] = useState(false)
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -114,6 +122,7 @@ function ChatSidebar({
   }
 
   return (
+    <>
     <aside
       className={`group relative z-20 h-full shrink-0 overflow-hidden bg-[#F9FAFB] transition-[width,background-color] duration-300 dark:bg-[#212121] ${isOpen ? 'w-[260px]' : 'w-[68px] cursor-pointer'}`}
       onClick={(event) => {
@@ -291,7 +300,7 @@ function ChatSidebar({
                       return (
                         <li
                           key={session.id}
-                          className={`group/session flex items-center rounded-lg transition-colors ${isActive ? 'bg-[#E5E7EB] dark:bg-[#3a3a3a]' : 'hover:bg-[#E5E7EB] dark:hover:bg-[#2f2f2f]'}`}
+                          className={`group/session flex items-center rounded-lg transition-colors ${isActive ? 'lovechat-accent-session-active' : 'lovechat-accent-session-hover'}`}
                         >
                           {editingSessionId === session.id ? (
                             <input
@@ -311,7 +320,7 @@ function ChatSidebar({
                                   cancelRename()
                                 }
                               }}
-                              className="mx-1 my-1 w-[calc(100%-2.5rem)] flex-1 rounded-md border border-blue-400 bg-white px-2 py-1 text-[13px] text-gray-900 shadow-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:border-blue-400/50 dark:bg-[#242424] dark:text-gray-100 dark:focus:border-blue-300 dark:focus:ring-blue-300/60"
+                              className="lovechat-accent-focus mx-1 my-1 w-[calc(100%-2.5rem)] flex-1 rounded-md border border-[color:color-mix(in_oklab,var(--ring)_45%,white_55%)] bg-white px-2 py-1 text-[13px] text-gray-900 shadow-sm outline-none dark:bg-[#242424] dark:text-gray-100"
                             />
                           ) : (
                             <button
@@ -370,8 +379,12 @@ function ChatSidebar({
               aria-label="Open profile menu"
               className={`flex w-full items-center rounded-lg bg-transparent py-2 transition-colors focus:outline-none data-[popup-open]:bg-transparent ${isOpen ? 'gap-2.5 justify-start px-2 hover:bg-gray-200 dark:hover:bg-[#3a3a3a]' : 'ghost-icon-btn justify-center px-0 hover:text-gray-900 dark:hover:text-white'}`}
             >
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[12px] font-bold text-gray-800 dark:bg-[#333333] dark:text-gray-200">
-                {avatarInitials}
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-gray-200 text-[12px] font-bold text-gray-800 dark:bg-[#333333] dark:text-gray-200">
+                {avatarImageSrc ? (
+                  <img src={avatarImageSrc} alt="Profile avatar" className="h-full w-full object-cover" />
+                ) : (
+                  avatarInitials
+                )}
               </div>
               <span className={`truncate text-[14px] font-medium text-gray-900 dark:text-gray-100 ${isOpen ? '' : 'hidden'}`}>
                 {profileName}
@@ -384,7 +397,9 @@ function ChatSidebar({
             >
               <MenuItem
                 className="cursor-pointer gap-2.5 rounded-[10px] px-3 py-2 text-[14px] text-gray-700 data-highlighted:bg-gray-50 data-highlighted:text-gray-700 dark:text-gray-200 dark:data-highlighted:bg-white/10 dark:data-highlighted:text-gray-100"
-                onClick={onOpenSettings}
+                onClick={() => {
+                  setIsSettingsOpen(true)
+                }}
               >
                 <Settings className="size-4" />
                 Settings
@@ -403,6 +418,15 @@ function ChatSidebar({
         </div>
       </div>
     </aside>
+
+    <SettingsDialog
+      isOpen={isSettingsOpen}
+      onClose={() => setIsSettingsOpen(false)}
+      profileFullName={profileFullName}
+      profileNickname={profileNickname}
+      onProfileUpdated={onProfileUpdated}
+    />
+    </>
   )
 }
 

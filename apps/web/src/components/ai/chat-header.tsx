@@ -47,6 +47,8 @@ function ChatHeader({
 
   const isShareOpen = openDropdown === 'share'
   const isMoreOpen = openDropdown === 'more'
+  const normalizedChatTitle = chatTitle?.trim() ?? ''
+  const shouldShowChatTitle = normalizedChatTitle.length > 0 && normalizedChatTitle.toLowerCase() !== 'new chat'
 
   return (
     <header
@@ -57,16 +59,18 @@ function ChatHeader({
         <span className="text-[20px] font-bold tracking-tight text-gray-900 dark:text-gray-100">LoveChat</span>
       </div>
 
-      <div className="pointer-events-none absolute left-1/2 max-w-[min(52vw,36rem)] -translate-x-1/2 px-3 text-center">
-        <p className="truncate text-[15px] font-semibold tracking-tight text-gray-800 dark:text-gray-100">{chatTitle ?? 'New chat'}</p>
-      </div>
+      {shouldShowChatTitle ? (
+        <div className="pointer-events-none absolute left-1/2 max-w-[min(52vw,36rem)] -translate-x-1/2 px-3 text-center">
+          <p className="truncate text-[15px] font-semibold tracking-tight text-gray-800 dark:text-gray-100">{normalizedChatTitle}</p>
+        </div>
+      ) : null}
 
       <div className="flex items-center gap-0.5 sm:gap-1">
         <div className="relative">
           <button
             type="button"
             onClick={() => toggleDropdown('share')}
-            className="flex h-9 items-center gap-2 rounded-lg px-3 text-[14px] font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none dark:text-gray-300 dark:hover:bg-white/10 dark:hover:text-gray-100"
+            className="lovechat-accent-surface flex h-9 items-center gap-2 rounded-lg px-3 text-[14px] font-medium text-gray-600 transition-colors focus:outline-none dark:text-gray-300"
             aria-haspopup="menu"
             aria-expanded={isShareOpen}
             aria-label="Share"
@@ -128,7 +132,7 @@ function ChatHeader({
           <button
             type="button"
             onClick={() => toggleDropdown('more')}
-            className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none dark:text-gray-300 dark:hover:bg-white/10 dark:hover:text-gray-100"
+            className="lovechat-accent-surface flex h-9 w-9 items-center justify-center rounded-lg text-gray-600 transition-colors focus:outline-none dark:text-gray-300"
             title="More Options"
             aria-haspopup="menu"
             aria-expanded={isMoreOpen}

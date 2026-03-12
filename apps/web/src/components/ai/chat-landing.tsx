@@ -39,6 +39,15 @@ type OnboardingProfileResponse = {
   }
 }
 
+type AccountProfileResponse = {
+  profile: {
+    email: string
+    fullName: string
+    nickname: string
+    avatarDataUrl: string | null
+  }
+}
+
 type ChatCompletionResponse = {
   generationId: string
   status: 'queued' | 'in_progress'
@@ -479,6 +488,7 @@ function ChatLanding() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [fullName, setFullName] = useState('')
   const [nickname, setNickname] = useState('')
+  const [avatarDataUrl, setAvatarDataUrl] = useState<string | null>(null)
   const [prompt, setPrompt] = useState('')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -1134,12 +1144,15 @@ function ChatLanding() {
     const cachedProfile = window.localStorage.getItem('lovechat_onboarding_profile')
     if (cachedProfile) {
       try {
-        const parsed = JSON.parse(cachedProfile) as { fullName?: string; nickname?: string }
+        const parsed = JSON.parse(cachedProfile) as { fullName?: string; nickname?: string; avatarDataUrl?: string | null }
         if (parsed.fullName) {
           setFullName(parsed.fullName)
         }
         if (parsed.nickname) {
           setNickname(parsed.nickname)
+        }
+        if (typeof parsed.avatarDataUrl === 'string' || parsed.avatarDataUrl === null) {
+          setAvatarDataUrl(parsed.avatarDataUrl)
         }
       } catch {
         // Ignore invalid local cache data.
@@ -1177,7 +1190,48 @@ function ChatLanding() {
       }
     }
 
-    void loadOnboardingProfile()
+    async function loadAccountProfile() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/account/profile`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+
+        if (!response.ok) {
+          return false
+        }
+
+        const payload = (await response.json()) as AccountProfileResponse
+        if (cancelled) {
+          return true
+        }
+
+        setFullName(payload.profile.fullName)
+        setNickname(payload.profile.nickname)
+        setAvatarDataUrl(payload.profile.avatarDataUrl)
+
+        window.localStorage.setItem(
+          'lovechat_onboarding_profile',
+          JSON.stringify({
+            fullName: payload.profile.fullName,
+            nickname: payload.profile.nickname,
+            avatarDataUrl: payload.profile.avatarDataUrl,
+          }),
+        )
+
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    void (async () => {
+      const loadedAccountProfile = await loadAccountProfile()
+      if (!loadedAccountProfile) {
+        await loadOnboardingProfile()
+      }
+    })()
 
     return () => {
       cancelled = true
@@ -2050,10 +2104,18 @@ function ChatLanding() {
         groupedSessions={groupedSessions}
         activeSessionId={activeSessionId}
         avatarInitials={avatarInitials}
+        avatarImageSrc={avatarDataUrl}
         profileName={avatarNameSource || 'Your Profile'}
+        profileFullName={fullName}
+        profileNickname={nickname}
         onToggleSidebar={() => setSidebarOpen((current) => !current)}
         onOpenProfile={handleOpenProfile}
         onOpenSettings={handleOpenSettings}
+        onProfileUpdated={({ fullName: nextFullName, nickname: nextNickname, avatarDataUrl: nextAvatarDataUrl }) => {
+          setFullName(nextFullName)
+          setNickname(nextNickname)
+          setAvatarDataUrl(nextAvatarDataUrl)
+        }}
         onLogout={handleLogout}
         onCreateNewChat={handleCreateNewChat}
         onOpenSession={openSession}
@@ -2079,10 +2141,10 @@ function ChatLanding() {
           {messages.length === 0 ? (
             <div className="mx-auto w-full max-w-3xl">
               <div className="mb-8 text-center">
-                <h1 className="text-[36px] leading-tight font-semibold tracking-tight text-black md:text-[44px]">
-                  Good afternoon, {firstName}.
+                <h1 className="text-[36px] leading-tight font-semibold tracking-tight text-black md:text-[44px] dark:text-gray-100">
+                  Good afternoon, <span className="lovechat-accent-text">{firstName}</span>.
                 </h1>
-                <h2 className="text-[36px] leading-tight font-normal tracking-tight text-black md:text-[44px]">
+                <h2 className="text-[36px] leading-tight font-normal tracking-tight text-black md:text-[44px] dark:text-gray-100">
                   How can I help you today?
                 </h2>
               </div>
@@ -2110,7 +2172,7 @@ function ChatLanding() {
                       key={topic}
                       type="button"
                       onClick={() => setActiveTopic(topic)}
-                      className={`rounded-[12px] border px-3.5 py-2 text-[14px] font-medium transition-colors ${isActive ? 'border-transparent bg-[#F3F4F6] text-slate-900 shadow-[inset_0_0_0_1px_rgba(148,163,184,0.28)] dark:bg-[#353535] dark:text-slate-100 dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]' : 'border-[#E5E5E5] text-slate-900 hover:bg-gray-50 dark:text-slate-100 dark:hover:bg-[#2f2f2f]'}`}
+                      className={`rounded-[12px] border px-3.5 py-2 text-[14px] font-medium transition-colors ${isActive ? 'lovechat-accent-soft shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--ring)_22%,transparent_78%)]' : 'border-[#E5E5E5] text-slate-900 lovechat-accent-surface dark:text-slate-100'}`}
                     >
                       {topic}
                     </button>
@@ -2125,7 +2187,7 @@ function ChatLanding() {
                       key={text}
                       type="button"
                       onClick={() => void submitPrompt(text)}
-                      className="border-b border-[#E5E5E5] bg-white px-5 py-4 text-left text-[15px] text-gray-700 transition-colors last:border-b-0 hover:bg-gray-50"
+                      className="lovechat-accent-surface border-b border-[#E5E5E5] bg-white px-5 py-4 text-left text-[15px] text-gray-700 transition-colors last:border-b-0"
                     >
                       {text}
                     </button>
@@ -2162,20 +2224,20 @@ function ChatLanding() {
                           </div>
                         ))}
 
-                        <div className="rounded-[20px] rounded-tr-[4px] bg-[#F3F4F6] px-5 py-3.5 text-[15px] leading-relaxed text-gray-900 dark:bg-[#3f3f3f] dark:text-gray-100">
+                        <div className="lovechat-accent-soft-static rounded-[20px] rounded-tr-[4px] px-5 py-3.5 text-[15px] leading-relaxed shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
                         {editingMessageId === message.id ? (
                           <div className="flex min-w-[280px] flex-col gap-3 sm:min-w-[400px]">
                             <textarea
                               value={editingDraft}
                               onChange={(event) => setEditingDraft(event.target.value)}
                               rows={3}
-                              className="w-full resize-none rounded-xl border border-[#E5E5E5] bg-white p-3 text-[15px] text-gray-900 outline-none shadow-sm focus:border-gray-400"
+                              className="lovechat-accent-focus w-full resize-none rounded-xl border border-[#E5E5E5] bg-white p-3 text-[15px] text-gray-900 outline-none shadow-sm"
                             />
                             <div className="flex justify-end gap-2">
                               <button
                                 type="button"
                                 onClick={handleCancelEditUserMessage}
-                                className="rounded-[8px] border border-[#E5E5E5] bg-white px-4 py-1.5 text-[13px] font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                                className="lovechat-accent-surface rounded-[8px] border border-[#E5E5E5] bg-white px-4 py-1.5 text-[13px] font-medium text-gray-700 transition-colors"
                               >
                                 Cancel
                               </button>
@@ -2183,7 +2245,7 @@ function ChatLanding() {
                                 type="button"
                                 onClick={() => void handleSaveEditUserMessage(message.id)}
                                 disabled={isLoading}
-                                className="rounded-[8px] bg-black px-4 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-gray-800"
+                                className="lovechat-accent-button rounded-[8px] px-4 py-1.5 text-[13px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 Save
                               </button>

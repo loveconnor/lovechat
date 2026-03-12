@@ -267,7 +267,7 @@ export function ModelSelector({ selectedModel, onModelChange }: ModelSelectorPro
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               onMouseDown={(e) => e.stopPropagation()}
-              className="w-full rounded-[12px] border border-[#E5E5E5] bg-[#F9FAFB] py-2 pl-8 pr-3 text-[13px] text-gray-900 placeholder:text-gray-400 transition-all focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-600 dark:bg-[#1a1a1a] dark:text-gray-100 dark:focus:border-blue-400 dark:focus:ring-blue-400"
+              className="lovechat-accent-focus w-full rounded-[12px] border border-[#E5E5E5] bg-[#F9FAFB] py-2 pl-8 pr-3 text-[13px] text-gray-900 placeholder:text-gray-400 transition-all focus:outline-none dark:border-gray-600 dark:bg-[#1a1a1a] dark:text-gray-100"
             />
           </div>
 
@@ -352,7 +352,7 @@ export function ModelSelector({ selectedModel, onModelChange }: ModelSelectorPro
                         e.stopPropagation()
                         setDetailsModel(model)
                       }}
-                      className="ml-auto rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:text-gray-400 dark:hover:bg-blue-900/30 dark:hover:text-blue-400"
+                      className="lovechat-accent-surface ml-auto rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 transition-colors dark:text-gray-400"
                     >
                       Details
                     </button>
@@ -427,7 +427,7 @@ export function ModelSelector({ selectedModel, onModelChange }: ModelSelectorPro
                   handleSelect(detailsModel.key)
                   setDetailsModel(null)
                 }}
-                className="rounded-[12px] bg-blue-600 px-5 py-2.5 text-[14px] font-medium text-white shadow-sm transition-colors hover:bg-blue-700 focus:outline-none"
+                className="lovechat-accent-button rounded-[12px] px-5 py-2.5 text-[14px] font-medium shadow-sm transition-colors focus:outline-none"
               >
                 Select Model
               </button>

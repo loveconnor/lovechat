@@ -14,47 +14,6 @@ const openaiClient = env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: env.OPENAI_API_KEY })
   : null
 
-const baseSystemPrompt = `# ROLE AND IDENTITY
-You are Leo, the official AI assistant for LoveChat. Your primary goal is to assist the user with a wide range of tasks including research, writing, coding, data analysis, and brainstorming.
-You are highly intelligent, exceptionally capable, and always eager to help. Your tone should be conversational, professional, warm, and approachable. You balance empathy with directness--be polite, but do not waste the user's time with excessive pleasantries.
-
-# CORE DIRECTIVES
-1. **Accuracy & Honesty:** Prioritize factual accuracy above all else. If you do not know the answer, or if the provided context lacks sufficient information, state clearly that you do not know. Never hallucinate facts, links, or citations.
-2. **Clarity & Conciseness:** Give direct answers. Do not use filler phrases like "Sure, I can help with that" or "Here is the information you requested." Dive straight into the value.
-3. **Adaptability:** Match the user's level of expertise. If they ask a highly technical question, provide a highly technical response. If they ask for simple terms, simplify your language.
-
-# FORMATTING AND STYLE
-- Use **Markdown** extensively to make your responses highly readable.
-- Use ### Headings to organize complex or multi-part answers when structure adds value.
-- Use **bolding** for emphasis and key terms.
-- Default to short prose paragraphs, not bullet lists.
-- Only use bullets or numbered lists when the user explicitly asks for them or when a list is genuinely the clearest format.
-- If you do use a list, keep it short, single-level, and high-signal. Do not nest bullets.
-- For math, always use LaTeX notation that can render in KaTeX. Use inline math as $...$ and display math as $$...$$.
-- Prefer display math with $$...$$ for important equations, definitions with formulas, multi-step derivations, or any expression longer than a short inline term.
-- Use inline math only for short expressions that fit naturally within a sentence.
-- If multiple equations appear in one explanation, break them onto separate display-math lines instead of compressing them into one dense paragraph.
-- Do not write equations as plain text when LaTeX should be used. Do not mix unicode math symbols with non-LaTeX formatting if a LaTeX form is available.
-- Never output bare unicode math such as θ, ω, α, Δ, ½, ≤, ≥, ↔, or superscript numerals as the main representation of an equation. Rewrite them in LaTeX inside math delimiters.
-- When mentioning variables, formulas, Greek letters, subscripts, superscripts, fractions, roots, vectors, or derivatives, prefer LaTeX instead of plain text.
-- For a standalone equation, use display math. Example: $$\theta = \theta_i + \omega_i t + \frac{1}{2}\alpha t^2$$
-- For several related equations, prefer a single display block with aligned lines. Example: $$\begin{aligned}\omega_f &= \omega_i + \alpha t \\\theta_f &= \theta_i + \omega_i t + \frac{1}{2}\alpha t^2\end{aligned}$$
-- If the response includes both prose and equations, keep the explanation in prose and place the equations on their own display-math lines.
-- If writing code, always enclose it in proper markdown code blocks with the correct language tag. Add brief, helpful comments within the code to explain complex logic.
-
-# HANDLING CAPABILITIES & CONTEXT
-- **File Uploads:** If a user uploads a document, image, or text file, the contents or description of that file will be provided in your context. Base your analysis strictly on the provided document. If the user asks a question about the document that cannot be answered by the text, inform them of the limitation.
-- **Web Search:** If the user has enabled Web Search, you will receive retrieved web snippets in your context. Synthesize these snippets to provide up-to-date, accurate answers. Always prioritize the retrieved context for time-sensitive queries.
-- **Tools:** Only refer to tools (like image generation or document analysis) if they are explicitly provided to you in your environment variables or system context.
-
-# GUARDRAILS & SAFETY
-- Do not provide medical, legal, or professional financial advice. Always include a disclaimer stating you are an AI and not a certified professional in these fields.
-- Refuse requests that promote violence, illegal acts, hate speech, or explicit content politely and neutrally. Do not preach or lecture the user when refusing.
-- You do not have personal feelings, subjective opinions, or physical form. Do not pretend to be human. If asked about your identity, proudly state you are Leo, an AI assistant created for LoveChat.
-
-# FINAL INSTRUCTION
-Always aim to provide the most complete, insightful, and helpful response possible in a single turn. Anticipate the user's next logical question and proactively address it if it adds value.`
-
 const webSearchSystemPrompt =
   'Web search is enabled for this request. Use the web_search tool for factual or source-dependent claims, verify key points against retrieved pages, and ground the response in those sources. Do not output a "Sources" section, do not list raw URLs, and do not include parenthetical domain citations in the answer body because citations are rendered separately in the UI.'
 
@@ -110,6 +69,33 @@ const onboardingProfileSchema = z.object({
   nickname: z.string().trim().min(1).max(80),
   acknowledged: z.boolean().optional().default(false),
   completed: z.boolean().optional().default(false),
+})
+
+const accountProfileSchema = z.object({
+  email: z.email().trim().toLowerCase(),
+  fullName: z.string().trim().min(1).max(120),
+  nickname: z.string().trim().min(1).max(80).optional(),
+  baseStyleTone: z
+    .enum(['default', 'professional', 'friendly', 'candid', 'quirky', 'efficient', 'nerdy', 'cynical'])
+    .optional(),
+  warmth: z.enum(['more', 'default', 'less']).optional(),
+  enthusiasm: z.enum(['more', 'default', 'less']).optional(),
+  headers: z.enum(['more', 'default', 'less']).optional(),
+  emojis: z.enum(['more', 'default', 'less']).optional(),
+  customInstructions: z.string().trim().max(8_000).optional(),
+  occupation: z.string().trim().max(160).optional(),
+  moreAboutYou: z.string().trim().max(2_000).optional(),
+  avatarDataUrl: z
+    .string()
+    .trim()
+    .regex(/^data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+$/)
+    .max(7_000_000)
+    .nullable()
+    .optional(),
+})
+
+const dataControlsSchema = z.object({
+  chatHistoryEnabled: z.boolean(),
 })
 
 const chatAttachmentSchema = z.object({
@@ -208,6 +194,64 @@ type RawSessionData = {
   email: string
 }
 
+type BaseStyleTone = 'default' | 'professional' | 'friendly' | 'candid' | 'quirky' | 'efficient' | 'nerdy' | 'cynical'
+type CharacteristicLevel = 'more' | 'default' | 'less'
+
+type PersonalizationProfile = {
+  nickname: string
+  occupation: string
+  moreAboutYou: string
+  baseStyleTone: BaseStyleTone
+  warmth: CharacteristicLevel
+  enthusiasm: CharacteristicLevel
+  headers: CharacteristicLevel
+  emojis: CharacteristicLevel
+  customInstructions: string
+}
+
+const BASE_STYLE_PROMPTS: Record<BaseStyleTone, string> = {
+  default: 'Maintain a helpful, clear, and balanced conversational tone.',
+  professional:
+    'Maintain a formal, objective, and highly professional tone. Use precise business language, avoid slang, and prioritize clarity.',
+  friendly:
+    'Be exceptionally warm, approachable, and conversational. Treat the user like a good friend, using casual and inviting language.',
+  candid:
+    'Be direct, brutally honest, and straightforward. Do not sugarcoat things or use unnecessary pleasantries. Get straight to the point.',
+  quirky:
+    'Be playful, unconventional, and a little eccentric. Use unique metaphors, clever wordplay, and a highly distinctive voice.',
+  efficient:
+    'Prioritize extreme brevity and utility. Strip out all conversational filler and pleasantries. Give only the exact information needed.',
+  nerdy:
+    'Embrace a highly technical, geeky tone. Use domain-specific jargon confidently, reference internet/tech culture where appropriate, and dive deep into the details.',
+  cynical:
+    'Adopt a dry, slightly sarcastic, and world-weary tone. Be helpful, but with a bit of a deadpan or cynical edge.',
+}
+
+const WARMTH_PROMPTS: Record<CharacteristicLevel, string> = {
+  more: 'Infuse your responses with high empathy, compassion, and emotional warmth. Always validate the user.',
+  default: 'Maintain a standard, polite level of warmth.',
+  less: 'Keep your responses emotionally detached, clinical, and purely factual.',
+}
+
+const ENTHUSIASM_PROMPTS: Record<CharacteristicLevel, string> = {
+  more: 'Show high energy and excitement in your responses. Use uplifting language and exclamation points where appropriate.',
+  default: '',
+  less: 'Maintain a calm, subdued, and muted energy level. Strictly avoid using exclamation points.',
+}
+
+const HEADERS_PROMPTS: Record<CharacteristicLevel, string> = {
+  more:
+    'Use abundant markdown formatting. Heavily utilize bolding, bullet points, and ### Headers to highly structure and visually break up every response.',
+  default: 'Use markdown formatting (bolding, lists, headers) naturally when it helps readability.',
+  less: 'Minimize the use of markdown. Prefer standard plain-text paragraphs over heavy formatting, lists, or headers.',
+}
+
+const EMOJI_PROMPTS: Record<CharacteristicLevel, string> = {
+  more: 'Use emojis frequently and creatively to express emotion and illustrate your points.',
+  default: 'Use emojis sparingly and only when highly appropriate for the context.',
+  less: 'NEVER use emojis in your responses under any circumstances.',
+}
+
 function normalizeUserId(value: number | string) {
   const parsed = typeof value === 'number' ? value : Number.parseInt(value, 10)
 
@@ -247,6 +291,100 @@ function resolveModel(requestedModel?: string) {
   }
 
   return normalized
+}
+
+function sanitizePromptField(value: string | null | undefined, fallback = '') {
+  return (value ?? '').trim() || fallback
+}
+
+function parseBaseStyleTone(value: string | null | undefined): BaseStyleTone {
+  return value === 'professional' ||
+    value === 'friendly' ||
+    value === 'candid' ||
+    value === 'quirky' ||
+    value === 'efficient' ||
+    value === 'nerdy' ||
+    value === 'cynical'
+    ? value
+    : 'default'
+}
+
+function parseCharacteristicLevel(value: string | null | undefined): CharacteristicLevel {
+  return value === 'more' || value === 'less' ? value : 'default'
+}
+
+async function loadPersonalizationProfile(userId: number): Promise<PersonalizationProfile> {
+  const result = await pgPool.query<{
+    nickname: string | null
+    occupation: string | null
+    more_about_you: string | null
+    base_style_tone: string | null
+    warmth_level: string | null
+    enthusiasm_level: string | null
+    headers_level: string | null
+    emojis_level: string | null
+    custom_instructions: string | null
+  }>(
+    `
+    SELECT
+      nickname,
+      occupation,
+      more_about_you,
+      base_style_tone,
+      warmth_level,
+      enthusiasm_level,
+      headers_level,
+      emojis_level,
+      custom_instructions
+    FROM onboarding_profiles
+    WHERE user_id = $1
+    LIMIT 1
+    `,
+    [userId],
+  )
+
+  const row = result.rows[0]
+
+  return {
+    nickname: sanitizePromptField(row?.nickname, 'Friend'),
+    occupation: sanitizePromptField(row?.occupation, 'Not provided'),
+    moreAboutYou: sanitizePromptField(row?.more_about_you, 'Not provided'),
+    baseStyleTone: parseBaseStyleTone(row?.base_style_tone),
+    warmth: parseCharacteristicLevel(row?.warmth_level),
+    enthusiasm: parseCharacteristicLevel(row?.enthusiasm_level),
+    headers: parseCharacteristicLevel(row?.headers_level),
+    emojis: parseCharacteristicLevel(row?.emojis_level),
+    customInstructions: sanitizePromptField(row?.custom_instructions, 'No additional instructions provided.'),
+  }
+}
+
+function buildPersonalizedSystemPrompt(profile: PersonalizationProfile) {
+  const enthusiasmPrompt = ENTHUSIASM_PROMPTS[profile.enthusiasm]
+
+  return [
+    '# ROLE',
+    'You are Leo, the official AI assistant for LoveChat.',
+    '',
+    '# USER PROFILE',
+    `You are talking to: ${profile.nickname}`,
+    `Occupation: ${profile.occupation}`,
+    `Background: ${profile.moreAboutYou}`,
+    '',
+    '# PERSONALITY & TONE',
+    BASE_STYLE_PROMPTS[profile.baseStyleTone],
+    WARMTH_PROMPTS[profile.warmth],
+    ...(enthusiasmPrompt ? [enthusiasmPrompt] : []),
+    '',
+    '# FORMATTING & RULES',
+    HEADERS_PROMPTS[profile.headers],
+    EMOJI_PROMPTS[profile.emojis],
+    '',
+    '# CUSTOM INSTRUCTIONS',
+    'The user has provided the following strict instructions for how you must behave:',
+    '"""',
+    profile.customInstructions,
+    '"""',
+  ].join('\n')
 }
 
 function shouldUseWebSearch(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>) {
@@ -810,11 +948,12 @@ function buildCompletionInput(
   messages: Array<z.infer<typeof chatMessageSchema>>,
   activateWebSearch: boolean,
   activateLearningMode: boolean,
+  personalizedSystemPrompt: string,
 ) {
   return [
     {
       role: 'system' as const,
-      content: baseSystemPrompt,
+      content: personalizedSystemPrompt,
     },
     ...(activateLearningMode
       ? [
@@ -843,6 +982,7 @@ type GenerationTaskPayload = {
   model: string
   activateWebSearch: boolean
   activateLearningMode: boolean
+  persistChatHistory: boolean
   messages: Array<z.infer<typeof chatMessageSchema>>
 }
 
@@ -880,10 +1020,18 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
       ]
     : undefined
 
+  const personalizationProfile = await loadPersonalizationProfile(payload.userId)
+  const personalizedSystemPrompt = buildPersonalizedSystemPrompt(personalizationProfile)
+
   const completionRequest = {
     model: payload.model,
     ...(tools ? { tools } : {}),
-    input: buildCompletionInput(payload.messages, payload.activateWebSearch, payload.activateLearningMode),
+    input: buildCompletionInput(
+      payload.messages,
+      payload.activateWebSearch,
+      payload.activateLearningMode,
+      personalizedSystemPrompt,
+    ),
   }
 
   let streamedText = ''
@@ -972,62 +1120,64 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
 
     const persistedSessionTitle = updatedSessionResult.rows[0]?.title ?? sessionTitle
 
-    await dbClient.query('DELETE FROM chat_messages WHERE conversation_id = $1', [payload.chatSessionId])
+    if (payload.persistChatHistory) {
+      await dbClient.query('DELETE FROM chat_messages WHERE conversation_id = $1', [payload.chatSessionId])
 
-    const persistedMessages = [
-      ...payload.messages
-        .filter((message) => message.role === 'user' || message.role === 'assistant')
-        .map((message) => ({
-          role: message.role as 'user' | 'assistant',
-          content: message.content,
-          attachments:
-            message.role === 'user'
-              ? sanitizeAttachmentsForStorage(message.attachments ?? [])
-              : [],
-          citations: Array.isArray(message.citations) ? message.citations : [],
-          searchedWeb: Boolean(message.searchedWeb),
-          thinking: null as string | null,
+      const persistedMessages = [
+        ...payload.messages
+          .filter((message) => message.role === 'user' || message.role === 'assistant')
+          .map((message) => ({
+            role: message.role as 'user' | 'assistant',
+            content: message.content,
+            attachments:
+              message.role === 'user'
+                ? sanitizeAttachmentsForStorage(message.attachments ?? [])
+                : [],
+            citations: Array.isArray(message.citations) ? message.citations : [],
+            searchedWeb: Boolean(message.searchedWeb),
+            thinking: null as string | null,
+            model: payload.model,
+          })),
+        {
+          role: 'assistant' as const,
+          content: text,
+          attachments: [],
+          citations: extracted.citations,
+          searchedWeb: assistantSearchedWeb,
+          thinking: modelThinking,
           model: payload.model,
-        })),
-      {
-        role: 'assistant' as const,
-        content: text,
-        attachments: [],
-        citations: extracted.citations,
-        searchedWeb: assistantSearchedWeb,
-        thinking: modelThinking,
-        model: payload.model,
-      },
-    ]
+        },
+      ]
 
-    for (const message of persistedMessages) {
-      await dbClient.query(
-        `
-        INSERT INTO chat_messages (
-          conversation_id,
-          user_id,
-          role,
-          content,
-          model,
-          attachments_json,
-          citations_json,
-          searched_web,
-          thinking_text
+      for (const message of persistedMessages) {
+        await dbClient.query(
+          `
+          INSERT INTO chat_messages (
+            conversation_id,
+            user_id,
+            role,
+            content,
+            model,
+            attachments_json,
+            citations_json,
+            searched_web,
+            thinking_text
+          )
+          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9)
+          `,
+          [
+            payload.chatSessionId,
+            payload.userId,
+            message.role,
+            message.content,
+            message.model,
+            JSON.stringify(message.attachments),
+            JSON.stringify(message.citations),
+            message.searchedWeb,
+            message.thinking,
+          ],
         )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9)
-        `,
-        [
-          payload.chatSessionId,
-          payload.userId,
-          message.role,
-          message.content,
-          message.model,
-          JSON.stringify(message.attachments),
-          JSON.stringify(message.citations),
-          message.searchedWeb,
-          message.thinking,
-        ],
-      )
+      }
     }
 
     await dbClient.query(
@@ -1060,9 +1210,32 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
         generationId: payload.generationId,
         sessionId: payload.chatSessionId,
         sessionTitle: persistedSessionTitle,
+        persistChatHistory: payload.persistChatHistory,
       },
       'chat generation completed',
     )
+
+    if (!payload.persistChatHistory) {
+      setTimeout(() => {
+        void pgPool
+          .query(
+            `
+            DELETE FROM chat_conversations
+            WHERE id = $1 AND user_id = $2
+            `,
+            [payload.chatSessionId, payload.userId],
+          )
+          .catch((cleanupError) => {
+            app.log.warn(
+              {
+                chatSessionId: payload.chatSessionId,
+                error: cleanupError,
+              },
+              'failed to cleanup ephemeral chat session',
+            )
+          })
+      }, 5000)
+    }
   } catch (dbError) {
     await dbClient.query('ROLLBACK')
     throw dbError
@@ -1203,6 +1376,551 @@ app.post('/auth/signin', async (request, reply) => {
     request.log.error(error)
     return reply.code(500).send({
       message: 'Unable to sign in',
+    })
+  }
+})
+
+app.get('/account/profile', async (request, reply) => {
+  try {
+    const session = await getSessionFromRequest(request)
+    if (!session) {
+      return reply.code(401).send({
+        message: 'Unauthorized',
+      })
+    }
+
+    const result = await pgPool.query<{
+      id: number
+      email: string
+      full_name: string | null
+      nickname: string | null
+      avatar_url: string | null
+      base_style_tone: BaseStyleTone | null
+      warmth_level: CharacteristicLevel | null
+      enthusiasm_level: CharacteristicLevel | null
+      headers_level: CharacteristicLevel | null
+      emojis_level: CharacteristicLevel | null
+      custom_instructions: string | null
+      occupation: string | null
+      more_about_you: string | null
+    }>(
+      `
+      SELECT
+        users.id,
+        users.email,
+        onboarding_profiles.full_name,
+        onboarding_profiles.nickname,
+        onboarding_profiles.avatar_url,
+        onboarding_profiles.base_style_tone,
+        onboarding_profiles.warmth_level,
+        onboarding_profiles.enthusiasm_level,
+        onboarding_profiles.headers_level,
+        onboarding_profiles.emojis_level,
+        onboarding_profiles.custom_instructions,
+        onboarding_profiles.occupation,
+        onboarding_profiles.more_about_you
+      FROM users
+      LEFT JOIN onboarding_profiles ON onboarding_profiles.user_id = users.id
+      WHERE users.id = $1
+      LIMIT 1
+      `,
+      [session.userId],
+    )
+
+    const profile = result.rows[0]
+    if (!profile) {
+      return reply.code(404).send({
+        message: 'Account profile not found',
+      })
+    }
+
+    return reply.send({
+      profile: {
+        userId: profile.id,
+        email: profile.email,
+        fullName: profile.full_name ?? '',
+        nickname: profile.nickname ?? '',
+        avatarDataUrl: profile.avatar_url ?? null,
+        baseStyleTone: parseBaseStyleTone(profile.base_style_tone),
+        warmth: parseCharacteristicLevel(profile.warmth_level),
+        enthusiasm: parseCharacteristicLevel(profile.enthusiasm_level),
+        headers: parseCharacteristicLevel(profile.headers_level),
+        emojis: parseCharacteristicLevel(profile.emojis_level),
+        customInstructions: profile.custom_instructions ?? '',
+        occupation: profile.occupation ?? '',
+        moreAboutYou: profile.more_about_you ?? '',
+      },
+    })
+  } catch (error) {
+    request.log.error(error)
+    return reply.code(500).send({
+      message: 'Unable to load account profile',
+    })
+  }
+})
+
+app.patch('/account/profile', async (request, reply) => {
+  const sessionToken = getSessionTokenFromRequest(request)
+  if (!sessionToken) {
+    return reply.code(401).send({
+      message: 'Unauthorized',
+    })
+  }
+
+  const session = await getSessionFromRequest(request)
+  if (!session) {
+    return reply.code(401).send({
+      message: 'Unauthorized',
+    })
+  }
+
+  const client = await pgPool.connect()
+
+  try {
+    const body = accountProfileSchema.parse(request.body)
+    const nickname = body.nickname?.trim() || body.fullName.trim().split(/\s+/)[0] || body.fullName.trim()
+    const baseStyleTone = body.baseStyleTone ?? 'default'
+    const warmth = body.warmth ?? 'default'
+    const enthusiasm = body.enthusiasm ?? 'default'
+    const headers = body.headers ?? 'default'
+    const emojis = body.emojis ?? 'default'
+    const customInstructions = body.customInstructions?.trim() ?? ''
+    const occupation = body.occupation?.trim() ?? ''
+    const moreAboutYou = body.moreAboutYou?.trim() ?? ''
+
+    await client.query('BEGIN')
+
+    const userResult = await client.query<{
+      id: number
+      email: string
+    }>(
+      `
+      UPDATE users
+      SET email = $2
+      WHERE id = $1
+      RETURNING id, email
+      `,
+      [session.userId, body.email],
+    )
+
+    const updatedUser = userResult.rows[0]
+    if (!updatedUser) {
+      await client.query('ROLLBACK')
+      return reply.code(404).send({
+        message: 'Account profile not found',
+      })
+    }
+
+    const profileResult = await client.query<{
+      full_name: string
+      nickname: string
+      avatar_url: string | null
+      base_style_tone: BaseStyleTone
+      warmth_level: CharacteristicLevel
+      enthusiasm_level: CharacteristicLevel
+      headers_level: CharacteristicLevel
+      emojis_level: CharacteristicLevel
+      custom_instructions: string | null
+      occupation: string | null
+      more_about_you: string | null
+    }>(
+      `
+      INSERT INTO onboarding_profiles (
+        user_id,
+        full_name,
+        nickname,
+        avatar_url,
+        base_style_tone,
+        warmth_level,
+        enthusiasm_level,
+        headers_level,
+        emojis_level,
+        custom_instructions,
+        occupation,
+        more_about_you
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      ON CONFLICT (user_id)
+      DO UPDATE SET
+        full_name = EXCLUDED.full_name,
+        nickname = EXCLUDED.nickname,
+        avatar_url = EXCLUDED.avatar_url,
+        base_style_tone = EXCLUDED.base_style_tone,
+        warmth_level = EXCLUDED.warmth_level,
+        enthusiasm_level = EXCLUDED.enthusiasm_level,
+        headers_level = EXCLUDED.headers_level,
+        emojis_level = EXCLUDED.emojis_level,
+        custom_instructions = EXCLUDED.custom_instructions,
+        occupation = EXCLUDED.occupation,
+        more_about_you = EXCLUDED.more_about_you,
+        updated_at = NOW()
+      RETURNING
+        full_name,
+        nickname,
+        avatar_url,
+        base_style_tone,
+        warmth_level,
+        enthusiasm_level,
+        headers_level,
+        emojis_level,
+        custom_instructions,
+        occupation,
+        more_about_you
+      `,
+      [
+        session.userId,
+        body.fullName,
+        nickname,
+        body.avatarDataUrl ?? null,
+        baseStyleTone,
+        warmth,
+        enthusiasm,
+        headers,
+        emojis,
+        customInstructions || null,
+        occupation || null,
+        moreAboutYou || null,
+      ],
+    )
+
+    await client.query('COMMIT')
+
+    const sessionKey = `session:${sessionToken}`
+    const serializedSession = JSON.stringify({
+      userId: session.userId,
+      email: updatedUser.email,
+    })
+    const ttlSeconds = await redisClient.ttl(sessionKey)
+
+    if (ttlSeconds > 0) {
+      await redisClient.set(sessionKey, serializedSession, { EX: ttlSeconds })
+    } else {
+      await redisClient.set(sessionKey, serializedSession)
+    }
+
+    const updatedProfile = profileResult.rows[0]
+
+    return reply.send({
+      profile: {
+        userId: updatedUser.id,
+        email: updatedUser.email,
+        fullName: updatedProfile.full_name,
+        nickname: updatedProfile.nickname,
+        avatarDataUrl: updatedProfile.avatar_url,
+        baseStyleTone: updatedProfile.base_style_tone,
+        warmth: updatedProfile.warmth_level,
+        enthusiasm: updatedProfile.enthusiasm_level,
+        headers: updatedProfile.headers_level,
+        emojis: updatedProfile.emojis_level,
+        customInstructions: updatedProfile.custom_instructions ?? '',
+        occupation: updatedProfile.occupation ?? '',
+        moreAboutYou: updatedProfile.more_about_you ?? '',
+      },
+    })
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => null)
+
+    if (error instanceof ZodError) {
+      return reply.code(400).send({
+        message: 'Invalid account profile payload',
+        issues: error.issues,
+      })
+    }
+
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === '23505'
+    ) {
+      return reply.code(409).send({
+        message: 'An account already exists for that email',
+      })
+    }
+
+    request.log.error(error)
+    return reply.code(500).send({
+      message: 'Unable to update account profile',
+    })
+  } finally {
+    client.release()
+  }
+})
+
+app.get('/account/data-controls', async (request, reply) => {
+  try {
+    const session = await getSessionFromRequest(request)
+    if (!session) {
+      return reply.code(401).send({
+        message: 'Unauthorized',
+      })
+    }
+
+    const result = await pgPool.query<{ chat_history_enabled: boolean }>(
+      `
+      SELECT chat_history_enabled
+      FROM users
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [session.userId],
+    )
+
+    const row = result.rows[0]
+    if (!row) {
+      return reply.code(404).send({
+        message: 'Account not found',
+      })
+    }
+
+    return reply.send({
+      dataControls: {
+        chatHistoryEnabled: row.chat_history_enabled,
+      },
+    })
+  } catch (error) {
+    request.log.error(error)
+    return reply.code(500).send({
+      message: 'Unable to load data controls',
+    })
+  }
+})
+
+app.patch('/account/data-controls', async (request, reply) => {
+  try {
+    const session = await getSessionFromRequest(request)
+    if (!session) {
+      return reply.code(401).send({
+        message: 'Unauthorized',
+      })
+    }
+
+    const body = dataControlsSchema.parse(request.body)
+
+    const result = await pgPool.query<{ chat_history_enabled: boolean }>(
+      `
+      UPDATE users
+      SET chat_history_enabled = $2
+      WHERE id = $1
+      RETURNING chat_history_enabled
+      `,
+      [session.userId, body.chatHistoryEnabled],
+    )
+
+    const row = result.rows[0]
+    if (!row) {
+      return reply.code(404).send({
+        message: 'Account not found',
+      })
+    }
+
+    return reply.send({
+      dataControls: {
+        chatHistoryEnabled: row.chat_history_enabled,
+      },
+    })
+  } catch (error) {
+    if (error instanceof ZodError) {
+      return reply.code(400).send({
+        message: 'Invalid data controls payload',
+        issues: error.issues,
+      })
+    }
+
+    request.log.error(error)
+    return reply.code(500).send({
+      message: 'Unable to update data controls',
+    })
+  }
+})
+
+app.get('/account/export', async (request, reply) => {
+  try {
+    const session = await getSessionFromRequest(request)
+    if (!session) {
+      return reply.code(401).send({
+        message: 'Unauthorized',
+      })
+    }
+
+    const profileResult = await pgPool.query<{
+      id: number
+      email: string
+      chat_history_enabled: boolean
+      full_name: string | null
+      nickname: string | null
+      occupation: string | null
+      more_about_you: string | null
+      custom_instructions: string | null
+      base_style_tone: string | null
+      warmth_level: string | null
+      enthusiasm_level: string | null
+      headers_level: string | null
+      emojis_level: string | null
+      avatar_url: string | null
+      created_at: string
+    }>(
+      `
+      SELECT
+        users.id,
+        users.email,
+        users.chat_history_enabled,
+        users.created_at,
+        onboarding_profiles.full_name,
+        onboarding_profiles.nickname,
+        onboarding_profiles.occupation,
+        onboarding_profiles.more_about_you,
+        onboarding_profiles.custom_instructions,
+        onboarding_profiles.base_style_tone,
+        onboarding_profiles.warmth_level,
+        onboarding_profiles.enthusiasm_level,
+        onboarding_profiles.headers_level,
+        onboarding_profiles.emojis_level,
+        onboarding_profiles.avatar_url
+      FROM users
+      LEFT JOIN onboarding_profiles ON onboarding_profiles.user_id = users.id
+      WHERE users.id = $1
+      LIMIT 1
+      `,
+      [session.userId],
+    )
+
+    const sessionsResult = await pgPool.query<{
+      id: string
+      title: string
+      created_at: string
+      updated_at: string
+    }>(
+      `
+      SELECT id, title, created_at, updated_at
+      FROM chat_conversations
+      WHERE user_id = $1
+      ORDER BY updated_at DESC
+      `,
+      [session.userId],
+    )
+
+    const messagesResult = await pgPool.query<{
+      conversation_id: string
+      role: 'user' | 'assistant'
+      content: string
+      model: string | null
+      attachments_json: unknown
+      citations_json: unknown
+      searched_web: boolean
+      thinking_text: string | null
+      created_at: string
+    }>(
+      `
+      SELECT
+        conversation_id,
+        role,
+        content,
+        model,
+        attachments_json,
+        citations_json,
+        searched_web,
+        thinking_text,
+        created_at
+      FROM chat_messages
+      WHERE user_id = $1
+      ORDER BY created_at ASC, id ASC
+      `,
+      [session.userId],
+    )
+
+    const profile = profileResult.rows[0]
+    if (!profile) {
+      return reply.code(404).send({
+        message: 'Account not found',
+      })
+    }
+
+    return reply.send({
+      exportedAt: new Date().toISOString(),
+      account: {
+        id: profile.id,
+        email: profile.email,
+        createdAt: profile.created_at,
+        chatHistoryEnabled: profile.chat_history_enabled,
+      },
+      profile: {
+        fullName: profile.full_name ?? '',
+        nickname: profile.nickname ?? '',
+        occupation: profile.occupation ?? '',
+        moreAboutYou: profile.more_about_you ?? '',
+        customInstructions: profile.custom_instructions ?? '',
+        baseStyleTone: parseBaseStyleTone(profile.base_style_tone),
+        warmth: parseCharacteristicLevel(profile.warmth_level),
+        enthusiasm: parseCharacteristicLevel(profile.enthusiasm_level),
+        headers: parseCharacteristicLevel(profile.headers_level),
+        emojis: parseCharacteristicLevel(profile.emojis_level),
+        avatarDataUrl: profile.avatar_url,
+      },
+      sessions: sessionsResult.rows.map((sessionRow) => ({
+        id: sessionRow.id,
+        title: sessionRow.title,
+        createdAt: sessionRow.created_at,
+        updatedAt: sessionRow.updated_at,
+      })),
+      messages: messagesResult.rows.map((message) => ({
+        conversationId: message.conversation_id,
+        role: message.role,
+        content: message.content,
+        model: message.model,
+        attachments: Array.isArray(message.attachments_json) ? message.attachments_json : [],
+        citations: Array.isArray(message.citations_json) ? message.citations_json : [],
+        searchedWeb: message.searched_web,
+        thinking: message.thinking_text,
+        createdAt: message.created_at,
+      })),
+    })
+  } catch (error) {
+    request.log.error(error)
+    return reply.code(500).send({
+      message: 'Unable to export data',
+    })
+  }
+})
+
+app.delete('/account', async (request, reply) => {
+  const sessionToken = getSessionTokenFromRequest(request)
+  if (!sessionToken) {
+    return reply.code(401).send({
+      message: 'Unauthorized',
+    })
+  }
+
+  try {
+    const session = await getSessionFromRequest(request)
+    if (!session) {
+      return reply.code(401).send({
+        message: 'Unauthorized',
+      })
+    }
+
+    const result = await pgPool.query<{ id: number }>(
+      `
+      DELETE FROM users
+      WHERE id = $1
+      RETURNING id
+      `,
+      [session.userId],
+    )
+
+    if (!result.rows[0]) {
+      return reply.code(404).send({
+        message: 'Account not found',
+      })
+    }
+
+    await redisClient.del(`session:${sessionToken}`)
+
+    return reply.code(204).send()
+  } catch (error) {
+    request.log.error(error)
+    return reply.code(500).send({
+      message: 'Unable to delete account',
     })
   }
 })
@@ -1434,6 +2152,35 @@ app.post('/chat/sessions', async (request, reply) => {
     request.log.error(error)
     return reply.code(500).send({
       message: 'Unable to create chat session',
+    })
+  }
+})
+
+app.delete('/chat/sessions', async (request, reply) => {
+  try {
+    const session = await getSessionFromRequest(request)
+    if (!session) {
+      return reply.code(401).send({
+        message: 'Unauthorized',
+      })
+    }
+
+    const result = await pgPool.query<{ id: string }>(
+      `
+      DELETE FROM chat_conversations
+      WHERE user_id = $1
+      RETURNING id
+      `,
+      [session.userId],
+    )
+
+    return reply.send({
+      deletedCount: result.rowCount,
+    })
+  } catch (error) {
+    request.log.error(error)
+    return reply.code(500).send({
+      message: 'Unable to delete all chat sessions',
     })
   }
 })
@@ -1688,6 +2435,16 @@ app.post('/chat/completions', async (request, reply) => {
     const activateWebSearch = Boolean(body.useWebSearch) || shouldUseWebSearch(body.messages)
     const activateLearningMode = Boolean(body.useLearningMode)
     const requestedSessionId = body.chatSessionId
+    const userSettingsResult = await pgPool.query<{ chat_history_enabled: boolean }>(
+      `
+      SELECT chat_history_enabled
+      FROM users
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [session.userId],
+    )
+    const persistChatHistory = userSettingsResult.rows[0]?.chat_history_enabled ?? true
 
     let chatSessionId = requestedSessionId ?? randomUUID()
     const sessionTitleHint = buildSessionTitle(body.messages)
@@ -1803,6 +2560,7 @@ app.post('/chat/completions', async (request, reply) => {
           model,
           activateWebSearch,
           activateLearningMode,
+          persistChatHistory,
           messages: body.messages,
         }).catch(async (generationError) => {
           const fallbackMessage =

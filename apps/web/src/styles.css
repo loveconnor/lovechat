@@ -165,6 +165,84 @@
   --hero-b: rgba(110, 200, 154, 0.12);
 }
 
+:root[data-accent="blue"] {
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --accent: color-mix(in oklab, #2563eb 12%, white 88%);
+  --accent-foreground: #1e3a8a;
+  --ring: #3b82f6;
+  --sidebar-primary: #2563eb;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: color-mix(in oklab, #2563eb 12%, white 88%);
+  --sidebar-accent-foreground: #1e3a8a;
+  --sidebar-ring: #3b82f6;
+}
+
+:root[data-accent="violet"] {
+  --primary: #7c3aed;
+  --primary-foreground: #ffffff;
+  --accent: color-mix(in oklab, #7c3aed 12%, white 88%);
+  --accent-foreground: #5b21b6;
+  --ring: #8b5cf6;
+  --sidebar-primary: #7c3aed;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: color-mix(in oklab, #7c3aed 12%, white 88%);
+  --sidebar-accent-foreground: #5b21b6;
+  --sidebar-ring: #8b5cf6;
+}
+
+:root[data-accent="pink"] {
+  --primary: #db2777;
+  --primary-foreground: #ffffff;
+  --accent: color-mix(in oklab, #db2777 12%, white 88%);
+  --accent-foreground: #9d174d;
+  --ring: #ec4899;
+  --sidebar-primary: #db2777;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: color-mix(in oklab, #db2777 12%, white 88%);
+  --sidebar-accent-foreground: #9d174d;
+  --sidebar-ring: #ec4899;
+}
+
+:root[data-accent="rose"] {
+  --primary: #e11d48;
+  --primary-foreground: #ffffff;
+  --accent: color-mix(in oklab, #e11d48 12%, white 88%);
+  --accent-foreground: #9f1239;
+  --ring: #f43f5e;
+  --sidebar-primary: #e11d48;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: color-mix(in oklab, #e11d48 12%, white 88%);
+  --sidebar-accent-foreground: #9f1239;
+  --sidebar-ring: #f43f5e;
+}
+
+:root[data-accent="green"] {
+  --primary: #059669;
+  --primary-foreground: #ffffff;
+  --accent: color-mix(in oklab, #059669 12%, white 88%);
+  --accent-foreground: #065f46;
+  --ring: #10b981;
+  --sidebar-primary: #059669;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: color-mix(in oklab, #059669 12%, white 88%);
+  --sidebar-accent-foreground: #065f46;
+  --sidebar-ring: #10b981;
+}
+
+:root[data-accent="orange"] {
+  --primary: #ea580c;
+  --primary-foreground: #ffffff;
+  --accent: color-mix(in oklab, #ea580c 12%, white 88%);
+  --accent-foreground: #9a3412;
+  --ring: #f97316;
+  --sidebar-primary: #ea580c;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: color-mix(in oklab, #ea580c 12%, white 88%);
+  --sidebar-accent-foreground: #9a3412;
+  --sidebar-ring: #f97316;
+}
+
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --sea-ink: #d7ece8;
@@ -593,6 +671,89 @@ a {
 .lovechat-shell .chat-delete-item:focus-visible,
 .lovechat-shell .chat-delete-item[data-highlighted] {
   background-color: #fef2f2 !important;
+}
+
+.lovechat-accent-text {
+  color: var(--primary) !important;
+}
+
+.lovechat-accent-icon {
+  background-color: var(--accent) !important;
+  color: var(--primary) !important;
+}
+
+.lovechat-accent-chip {
+  border: 1px solid color-mix(in oklab, var(--ring) 34%, transparent 66%);
+  background-color: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.lovechat-accent-chip-dismiss {
+  color: color-mix(in oklab, var(--primary) 52%, white 48%);
+}
+
+.lovechat-accent-chip-dismiss:hover {
+  color: inherit;
+}
+
+.lovechat-accent-button {
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.lovechat-accent-button:hover {
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.lovechat-accent-soft {
+  border-color: color-mix(in oklab, var(--ring) 28%, transparent 72%) !important;
+  background-color: color-mix(in oklab, var(--accent) 90%, white 10%) !important;
+  color: var(--accent-foreground) !important;
+}
+
+.lovechat-accent-soft-static {
+  border-color: color-mix(in oklab, var(--ring) 28%, transparent 72%) !important;
+  background-color: color-mix(in oklab, var(--accent) 90%, white 10%) !important;
+  color: var(--accent-foreground) !important;
+}
+
+.lovechat-accent-soft:hover,
+.lovechat-accent-soft:focus-visible {
+  background-color: color-mix(in oklab, var(--foreground) 6%, var(--accent) 94%) !important;
+}
+
+.lovechat-accent-session-active {
+  background-color: color-mix(in oklab, var(--foreground) 10%, transparent 90%) !important;
+  color: inherit !important;
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent 90%);
+}
+
+.lovechat-accent-session-hover:hover,
+.lovechat-accent-session-hover:focus-visible {
+  background-color: color-mix(in oklab, var(--foreground) 8%, transparent 92%) !important;
+  color: inherit !important;
+}
+
+.lovechat-accent-surface:hover,
+.lovechat-accent-surface:focus-visible {
+  background-color: color-mix(in oklab, var(--foreground) 8%, transparent 92%) !important;
+  color: inherit !important;
+}
+
+.lovechat-accent-focus:focus,
+.lovechat-accent-focus:focus-visible {
+  border-color: var(--ring) !important;
+  box-shadow: 0 0 0 1px var(--ring) !important;
+}
+
+.lovechat-accent-toggle-input:focus-visible + .lovechat-accent-toggle-track {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 35%, transparent 65%);
+}
+
+.lovechat-accent-toggle-input:checked + .lovechat-accent-toggle-track {
+  background-color: var(--primary) !important;
 }
 
 .dark .lovechat-shell .chat-delete-item,

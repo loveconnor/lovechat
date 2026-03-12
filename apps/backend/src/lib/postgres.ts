@@ -15,8 +15,14 @@ export async function initializeDatabase() {
       id BIGSERIAL PRIMARY KEY,
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
+      chat_history_enabled BOOLEAN NOT NULL DEFAULT TRUE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS chat_history_enabled BOOLEAN NOT NULL DEFAULT TRUE
   `)
 
   await pgPool.query(`
@@ -24,11 +30,65 @@ export async function initializeDatabase() {
       user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       full_name TEXT NOT NULL,
       nickname TEXT NOT NULL,
+      avatar_url TEXT,
+      base_style_tone TEXT NOT NULL DEFAULT 'default',
+      warmth_level TEXT NOT NULL DEFAULT 'default',
+      enthusiasm_level TEXT NOT NULL DEFAULT 'default',
+      headers_level TEXT NOT NULL DEFAULT 'default',
+      emojis_level TEXT NOT NULL DEFAULT 'default',
+      custom_instructions TEXT,
+      occupation TEXT,
+      more_about_you TEXT,
       acknowledged_at TIMESTAMPTZ,
       completed_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE onboarding_profiles
+    ADD COLUMN IF NOT EXISTS avatar_url TEXT
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE onboarding_profiles
+    ADD COLUMN IF NOT EXISTS base_style_tone TEXT NOT NULL DEFAULT 'default'
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE onboarding_profiles
+    ADD COLUMN IF NOT EXISTS warmth_level TEXT NOT NULL DEFAULT 'default'
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE onboarding_profiles
+    ADD COLUMN IF NOT EXISTS enthusiasm_level TEXT NOT NULL DEFAULT 'default'
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE onboarding_profiles
+    ADD COLUMN IF NOT EXISTS headers_level TEXT NOT NULL DEFAULT 'default'
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE onboarding_profiles
+    ADD COLUMN IF NOT EXISTS emojis_level TEXT NOT NULL DEFAULT 'default'
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE onboarding_profiles
+    ADD COLUMN IF NOT EXISTS custom_instructions TEXT
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE onboarding_profiles
+    ADD COLUMN IF NOT EXISTS occupation TEXT
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE onboarding_profiles
+    ADD COLUMN IF NOT EXISTS more_about_you TEXT
   `)
 
   await pgPool.query(`
