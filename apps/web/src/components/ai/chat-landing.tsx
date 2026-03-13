@@ -6,10 +6,13 @@ import { ChatHeader } from '#/components/ai/chat-header'
 import { ChatInput } from '#/components/ai/chat-input'
 import { ChatSidebar } from '#/components/ai/chat-sidebar'
 import { Markdown } from '#/components/ai/markdown'
+import { ChartCard } from '#/components/ai/visualization/chart-card'
+import { parseVisualizationContent } from '#/components/ai/visualization/parse'
 import AIThinking from '#/components/ai/thinking'
 import { safeParseSerializableCitation } from '#/components/ai/citation/schema'
 import { useStream } from '#/components/ai/use-stream'
 import type { SerializableCitation } from '#/components/ai/citation'
+import type { ChartAction } from '#/components/ai/visualization/schema'
 
 type Topic = 'Research' | 'Create Images' | 'How to' | 'Analyze' | 'Code'
 type ChatRole = 'user' | 'assistant'
@@ -108,6 +111,10 @@ type ChatSessionResponse = {
     updatedAt: string
     completedAt?: string | null
   }
+}
+
+type SubmitPromptOptions = {
+  silent?: boolean
 }
 
 const webSearchKeywordPattern = /\b(research|search)\b/i
@@ -296,6 +303,22 @@ function escapeHtml(value: string) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
+}
+
+function getAssistantRenderableContent(content: string) {
+  return parseVisualizationContent(content)
+}
+
+function getAssistantCopyContent(content: string) {
+  const parsed = getAssistantRenderableContent(content)
+  return parsed.markdown.trim()
+}
+
+function getAssistantExportContent(content: string) {
+  const parsed = getAssistantRenderableContent(content)
+  const chartSummaries = parsed.charts.map((chart) => `Chart: ${chart.title} (${chart.chartType})`)
+
+  return [parsed.markdown.trim(), ...chartSummaries].filter(Boolean).join('\n\n').trim()
 }
 
 async function fileToDataUrl(file: File) {
@@ -1430,7 +1453,12 @@ function ChatLanding() {
       const heading = message.role === 'user' ? '## You' : '## LoveChat'
       parts.push(heading)
       parts.push('')
-      parts.push(message.content.trim() || '_Empty message_')
+      const messageBody =
+        message.role === 'assistant'
+          ? getAssistantExportContent(message.content)
+          : message.content.trim()
+
+      parts.push(messageBody || '_Empty message_')
 
       if (message.attachments && message.attachments.length > 0) {
         parts.push('')
@@ -1466,7 +1494,11 @@ function ChatLanding() {
         : messages
             .map((message) => {
               const author = message.role === 'user' ? 'You' : 'LoveChat'
-              const fallbackBody = escapeHtml(message.content).replace(/\n/g, '<br/>') || '<em>Empty message</em>'
+              const fallbackSource =
+                message.role === 'assistant'
+                  ? getAssistantExportContent(message.content)
+                  : message.content
+              const fallbackBody = escapeHtml(fallbackSource).replace(/\n/g, '<br/>') || '<em>Empty message</em>'
               const assistantRendered = renderedAssistantBlocks[assistantBlockIndex]?.innerHTML
               if (message.role === 'assistant') {
                 assistantBlockIndex += 1
@@ -2061,7 +2093,15 @@ function ChatLanding() {
     }
   }
 
-  async function submitPrompt(nextPrompt?: string, files: File[] = []) {
+  async function handleVisualizationAction(action: ChartAction) {
+    if (isLoading) {
+      return
+    }
+
+    await submitPrompt(action.prompt, [], { silent: true })
+  }
+
+  async function submitPrompt(nextPrompt?: string, files: File[] = [], options: SubmitPromptOptions = {}) {
     const content = (nextPrompt ?? prompt).trim()
     if (!content || isLoading) {
       return
@@ -2078,8 +2118,11 @@ function ChatLanding() {
     })
     const history = [...messages, userMessage]
 
-    setMessages(history)
-    setPrompt('')
+    if (!options.silent) {
+      setMessages(history)
+      setPrompt('')
+    }
+
     setIsLoading(true)
 
     try {
@@ -2292,19 +2335,32 @@ function ChatLanding() {
                             streamingMessageId === message.id
                               ? (stream || message.content)
                               : message.content
-                          const hasRenderableContent = renderedContent.trim().length > 0
+                          const parsedContent = getAssistantRenderableContent(renderedContent)
+                          const hasRenderableContent = parsedContent.markdown.trim().length > 0
+                          const hasVisualizations = parsedContent.charts.length > 0
                           const hasCitations = Boolean(message.citations && message.citations.length > 0)
-                          const showActions = hasRenderableContent || hasCitations
+                          const showActions = hasRenderableContent || hasCitations || hasVisualizations
 
                           return (
                             <>
                         {hasRenderableContent ? (
                           <div data-export-assistant-markdown>
                             <Markdown className="prose-p:my-3 first:prose-p:mt-0 last:prose-p:mb-0">
-                              {renderedContent}
+                              {parsedContent.markdown}
                             </Markdown>
                           </div>
                         ) : null}
+
+                        {hasVisualizations
+                          ? parsedContent.charts.map((chart) => (
+                              <ChartCard
+                                key={`${message.id}-${chart.title}-${chart.xAxis.label}`}
+                                chart={chart}
+                                onAction={handleVisualizationAction}
+                                actionsDisabled={isLoading}
+                              />
+                            ))
+                          : null}
 
                         {showActions ? (
                           <div className="mt-2 flex items-center gap-2 opacity-100 transition-opacity duration-200">
@@ -2319,7 +2375,7 @@ function ChatLanding() {
 
                           <button
                             type="button"
-                            onClick={() => void handleCopyMessage(message.id, message.content)}
+                            onClick={() => void handleCopyMessage(message.id, getAssistantCopyContent(message.content))}
                             className={`p-1 transition-colors ${copiedMessageId === message.id ? 'text-green-500' : 'text-gray-400 hover:text-gray-600'}`}
                             aria-label="Copy response"
                             title="Copy"

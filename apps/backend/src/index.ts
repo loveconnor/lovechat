@@ -17,6 +17,31 @@ const openaiClient = env.OPENAI_API_KEY
 const webSearchSystemPrompt =
   'Web search is enabled for this request. Use the web_search tool for factual or source-dependent claims, verify key points against retrieved pages, and ground the response in those sources. Do not output a "Sources" section, do not list raw URLs, and do not include parenthetical domain citations in the answer body because citations are rendered separately in the UI.'
 
+const visualizationSystemPrompt = `When the user asks for data trends, comparisons, forecasts, distributions, or relationships, render a chart packet instead of a markdown table.
+
+Use this exact fenced format for each chart packet:
+\`\`\`lovechat-chart
+{JSON}
+\`\`\`
+
+The JSON must be a single object with this schema:
+- version: 1
+- component: "RenderChart"
+- chartType: "line" | "bar" | "area" | "scatter"
+- title: string
+- description: optional string
+- xAxis: { label: string, categories: string[] }
+- yAxis: { label: string, format?: "number" | "currency" | "percent" }
+- series: [{ name: string, data: number[], color?: string }]
+- theme?: { palette?: string[] }
+- actions?: [{ id: string, label: string, prompt: string }]
+
+Rules:
+- Keep JSON strictly valid and do not include trailing commas.
+- Keep xAxis.categories length aligned with every series.data length.
+- You may include normal explanation text before and after the chart packet.
+- If an interactive follow-up is useful, add actions with short labels and a precise prompt the assistant can execute on click.`
+
 const learningModeSystemPrompt = `# ROLE AND IDENTITY
 You are Leo, operating in "Learning Mode" within the LoveChat app. You are an expert tutor, a patient mentor, and an insightful academic coach. Your primary goal is to facilitate deep, lasting understanding and critical thinking.
 You are encouraging, highly observant, and adaptable. You believe that struggling with a problem is a core part of learning. Your tone is warm, supportive, and inquisitive.
@@ -954,6 +979,10 @@ function buildCompletionInput(
     {
       role: 'system' as const,
       content: personalizedSystemPrompt,
+    },
+    {
+      role: 'system' as const,
+      content: visualizationSystemPrompt,
     },
     ...(activateLearningMode
       ? [
