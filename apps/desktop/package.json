@@ -1,0 +1,15 @@
+{
+  "name": "@lovechat/desktop",
+  "private": true,
+  "type": "commonjs",
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "build": "echo \"No desktop build configured yet\"",
+    "lint": "node --check main.cjs",
+    "test": "echo \"No tests configured\""
+  },
+  "devDependencies": {
+    "electron": "^36.2.1"
+  }
+}

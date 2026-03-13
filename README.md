@@ -1,9 +1,10 @@
 # lovechat monorepo
 
-This repository is now a pnpm workspace monorepo with two applications:
+This repository is now a pnpm workspace monorepo with three applications:
 
 - `apps/web`: TanStack Start frontend
 - `apps/backend`: Fastify API server (Redis + PostgreSQL)
+- `apps/desktop`: Electron wrapper that auto-starts web + backend
 
 ## Prerequisites
 
@@ -42,6 +43,12 @@ Run both apps in parallel:
 
 ```bash
 pnpm dev
+```
+
+Run desktop app (starts Docker services, backend, and web automatically):
+
+```bash
+pnpm dev:desktop
 ```
 
 Run only one app:

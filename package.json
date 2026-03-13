@@ -6,6 +6,7 @@
     "dev": "pnpm --parallel --filter @lovechat/web --filter @lovechat/backend dev",
     "dev:web": "pnpm --filter @lovechat/web dev",
     "dev:backend": "pnpm --filter @lovechat/backend dev",
+    "dev:desktop": "pnpm --filter @lovechat/desktop dev",
     "build": "pnpm -r build",
     "preview": "pnpm --filter @lovechat/web preview",
     "test": "pnpm -r test",
@@ -20,6 +21,7 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
+      "electron",
       "esbuild",
       "lightningcss"
     ]
