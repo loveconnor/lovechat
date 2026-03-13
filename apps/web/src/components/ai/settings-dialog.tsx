@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '#/components/ui/button'
 import { Input } from '#/components/ui/input'
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from '#/components/ui/select'
+import { Switch } from '#/components/ui/switch'
 
 type SettingsTab = 'general' | 'personalization' | 'data'
 type ThemeMode = 'light' | 'dark' | 'auto'
@@ -73,7 +74,7 @@ const ACCENT_COLORS = [
   {
     label: 'Default',
     value: 'default',
-    swatchClassName: 'border border-gray-300 bg-[linear-gradient(135deg,#111827_0%,#6B7280_100%)] dark:border-gray-500',
+    swatchClassName: 'border border-gray-300 bg-gray-700 dark:border-gray-500 dark:bg-gray-300',
     ringClassName: 'ring-gray-400 dark:ring-gray-500',
   },
   { label: 'Blue', value: 'blue', swatchClassName: 'bg-blue-500', ringClassName: 'ring-blue-500' },
@@ -101,6 +102,9 @@ const CHARACTERISTIC_OPTIONS: Array<{ value: CharacteristicLevel; label: string;
   { value: 'less', label: 'Less', description: 'Reduce this characteristic in replies.' },
 ]
 
+const SUPPORTED_AVATAR_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
+const SUPPORTED_AVATAR_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp'])
+
 function splitFullName(fullName: string) {
   const trimmed = fullName.trim()
   if (!trimmed) {
@@ -112,6 +116,15 @@ function splitFullName(fullName: string) {
     firstName,
     lastName: rest.join(' '),
   }
+}
+
+function isSupportedAvatarFile(file: File) {
+  if (SUPPORTED_AVATAR_MIME_TYPES.has(file.type.toLowerCase())) {
+    return true
+  }
+
+  const extension = file.name.includes('.') ? file.name.split('.').pop()?.toLowerCase() : null
+  return extension ? SUPPORTED_AVATAR_EXTENSIONS.has(extension) : false
 }
 
 function resolveThemeMode(mode: ThemeMode) {
@@ -363,21 +376,24 @@ function SettingsDialog({
     return () => {
       cancelled = true
     }
-  }, [apiBaseUrl, isOpen, onProfileUpdated, profileFullName])
+  }, [apiBaseUrl, isOpen, profileFullName, profileNickname])
 
   function handleAvatarChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
+    const input = event.currentTarget
+    const file = input.files?.[0]
     if (!file) {
       return
     }
 
-    if (!file.type.startsWith('image/')) {
-      setProfileError('Please upload an image file (JPG, PNG, or GIF).')
+    if (!isSupportedAvatarFile(file)) {
+      setProfileError('Please upload a JPG, PNG, GIF, or WEBP image.')
+      input.value = ''
       return
     }
 
     if (file.size > 5 * 1024 * 1024) {
       setProfileError('Profile photo must be 5 MB or smaller.')
+      input.value = ''
       return
     }
 
@@ -386,21 +402,24 @@ function SettingsDialog({
       const result = typeof reader.result === 'string' ? reader.result : null
       if (!result) {
         setProfileError('Unable to read the selected image.')
+        input.value = ''
         return
       }
 
       setAvatarSrc(result)
       setProfileError(null)
-      setSaveMessage(null)
+      setSaveMessage('Photo selected. Click Save changes to apply it.')
       onProfileUpdated?.({
         fullName: [firstName.trim(), lastName.trim()].filter(Boolean).join(' ').trim() || profileFullName,
         nickname: nickname.trim() || firstName.trim() || profileNickname,
         avatarDataUrl: result,
       })
+      input.value = ''
     }
 
     reader.onerror = () => {
       setProfileError('Unable to read the selected image.')
+      input.value = ''
     }
 
     reader.readAsDataURL(file)
@@ -690,7 +709,7 @@ function SettingsDialog({
         }
       }}
     >
-      <div className="relative flex h-[85vh] max-h-[700px] w-full max-w-4xl overflow-hidden rounded-[24px] border border-transparent bg-white shadow-2xl dark:border-gray-700 dark:bg-[#212121]">
+      <div className="relative flex h-[85vh] max-h-[700px] w-full max-w-4xl overflow-hidden rounded-[24px] border border-transparent bg-white shadow-2xl dark:border-gray-700 dark:bg-[#262626]">
         <button
           type="button"
           aria-label="Close settings"
@@ -703,7 +722,7 @@ function SettingsDialog({
           </svg>
         </button>
 
-        <div className="flex w-1/3 max-w-[240px] shrink-0 flex-col gap-1.5 overflow-y-auto border-r border-[#E5E5E5] bg-[#F9FAFB] p-4 dark:border-gray-700 dark:bg-[#171717] md:p-5">
+        <div className="flex w-1/3 max-w-[240px] shrink-0 flex-col gap-1.5 overflow-y-auto border-r border-[#E5E5E5] bg-[#F9FAFB] p-4 dark:border-gray-700 dark:bg-[#2d2d2d] md:p-5">
           <h2 className="mb-4 px-2 text-xl font-bold tracking-tight text-gray-900 dark:text-gray-100">Settings</h2>
 
           {TABS.map((tab) => (
@@ -713,8 +732,8 @@ function SettingsDialog({
               onClick={() => setActiveTab(tab)}
               className={`flex items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-left text-[14px] transition-colors focus:outline-none ${
                 activeTab === tab
-                  ? 'bg-gray-200 font-semibold text-gray-900 dark:bg-[#333333] dark:text-white'
-                  : 'font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-[#2a2a2a]'
+                  ? 'bg-gray-200 font-semibold text-gray-900 dark:bg-[#3a3a3a] dark:text-white'
+                  : 'font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-[#343434]'
               }`}
             >
               {TAB_ICONS[tab]}
@@ -755,8 +774,11 @@ function SettingsDialog({
                     <input
                       ref={avatarInputRef}
                       type="file"
-                      accept="image/*"
+                      accept="image/jpeg,image/png,image/gif,image/webp,.jpg,.jpeg,.png,.gif,.webp"
                       className="hidden"
+                      onClick={(event) => {
+                        event.currentTarget.value = ''
+                      }}
                       onChange={handleAvatarChange}
                     />
                   </div>
@@ -858,7 +880,7 @@ function SettingsDialog({
                     </div>
                     <Select value={theme} onValueChange={handleThemeChange}>
                       <SelectTrigger className="w-40">
-                        <SelectValue />
+                        <SelectValue className="capitalize" />
                       </SelectTrigger>
                       <SelectPopup>
                         <SelectItem value="auto">System Default</SelectItem>
@@ -911,7 +933,7 @@ function SettingsDialog({
                     onValueChange={(value) => setBaseStyleTone((value ?? 'default') as BaseStyleTone)}
                   >
                     <SelectTrigger className="w-full max-w-[320px]">
-                      <SelectValue />
+                      <SelectValue className="capitalize" />
                     </SelectTrigger>
                     <SelectPopup>
                       {BASE_STYLE_TONE_OPTIONS.map((option) => (
@@ -935,7 +957,7 @@ function SettingsDialog({
                       <label className="text-[13px] font-medium text-gray-700 dark:text-gray-300">Warm</label>
                       <Select value={warmth} onValueChange={(value) => setWarmth((value ?? 'default') as CharacteristicLevel)}>
                         <SelectTrigger>
-                          <SelectValue />
+                          <SelectValue className="capitalize" />
                         </SelectTrigger>
                         <SelectPopup>
                           {CHARACTERISTIC_OPTIONS.map((option) => (
@@ -956,7 +978,7 @@ function SettingsDialog({
                         onValueChange={(value) => setEnthusiasm((value ?? 'default') as CharacteristicLevel)}
                       >
                         <SelectTrigger>
-                          <SelectValue />
+                          <SelectValue className="capitalize" />
                         </SelectTrigger>
                         <SelectPopup>
                           {CHARACTERISTIC_OPTIONS.map((option) => (
@@ -974,7 +996,7 @@ function SettingsDialog({
                       <label className="text-[13px] font-medium text-gray-700 dark:text-gray-300">Headers & Formatting</label>
                       <Select value={headers} onValueChange={(value) => setHeaders((value ?? 'default') as CharacteristicLevel)}>
                         <SelectTrigger>
-                          <SelectValue />
+                          <SelectValue className="capitalize" />
                         </SelectTrigger>
                         <SelectPopup>
                           {CHARACTERISTIC_OPTIONS.map((option) => (
@@ -992,7 +1014,7 @@ function SettingsDialog({
                       <label className="text-[13px] font-medium text-gray-700 dark:text-gray-300">Emojis</label>
                       <Select value={emojis} onValueChange={(value) => setEmojis((value ?? 'default') as CharacteristicLevel)}>
                         <SelectTrigger>
-                          <SelectValue />
+                          <SelectValue className="capitalize" />
                         </SelectTrigger>
                         <SelectPopup>
                           {CHARACTERISTIC_OPTIONS.map((option) => (
@@ -1100,18 +1122,15 @@ function SettingsDialog({
                       Save new chats to your history. Unsaved chats will be deleted from our systems within 30 days.
                     </div>
                   </div>
-                  <label className="relative inline-flex shrink-0 cursor-pointer items-center">
-                    <input
-                      type="checkbox"
-                      checked={chatHistoryEnabled}
-                      onChange={(event) => {
-                        void handleChatHistoryToggle(event.target.checked)
-                      }}
-                      disabled={isDataControlsLoading || isSavingDataControls || isDeletingAccount}
-                      className="lovechat-accent-toggle-input peer sr-only"
-                    />
-                    <div className="lovechat-accent-toggle-track h-6 w-11 rounded-full bg-gray-200 after:absolute after:top-[2px] after:left-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white dark:bg-gray-600" />
-                  </label>
+                  <Switch
+                    checked={chatHistoryEnabled}
+                    onCheckedChange={(checked) => {
+                      void handleChatHistoryToggle(checked)
+                    }}
+                    disabled={isDataControlsLoading || isSavingDataControls || isDeletingAccount}
+                    aria-label="Chat History"
+                    className="data-unchecked:bg-gray-300 dark:data-unchecked:bg-gray-600"
+                  />
                 </div>
 
                 <div className="h-px w-full bg-[#E5E5E5] dark:bg-gray-700" />

@@ -44,12 +44,48 @@ function ThinkingHeader({ timer, text }: ThinkingHeaderProps) {
   )
 }
 
-export default function AIThinking({ className, text }: { className?: string; text?: string }) {
+type AIThinkingVariant = 'thinking' | 'image-generating'
+
+function ImageGeneratingCard() {
+  return (
+    <div className="lovechat-image-mesh-card relative isolate flex aspect-video w-full max-w-lg items-center justify-center overflow-hidden rounded-[20px] border border-[#E5E5E5]/50 bg-[#FAFAFA] shadow-sm dark:border-gray-700/50 dark:bg-[#121212]">
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="lovechat-mesh-blob lovechat-mesh-blob-a animate-blob absolute -left-[10%] -top-[20%] h-[70%] w-[70%] rounded-full blur-[60px]" />
+        <div className="lovechat-mesh-blob lovechat-mesh-blob-b animate-blob animation-delay-2000 absolute -bottom-[20%] -right-[10%] h-[70%] w-[70%] rounded-full blur-[60px]" />
+        <div className="lovechat-mesh-blob lovechat-mesh-blob-c animate-blob animation-delay-4000 absolute left-[20%] top-[20%] h-[60%] w-[60%] rounded-full blur-[60px]" />
+      </div>
+    </div>
+  )
+}
+
+export default function AIThinking({
+  className,
+  text,
+  variant = 'thinking',
+}: {
+  className?: string
+  text?: string
+  variant?: AIThinkingVariant
+}) {
   const timer = useTimer()
   const resolvedText = useMemo(
     () => text?.trim() || 'LoveChat is thinking... ',
     [text],
   )
+
+  const resolvedImageText = useMemo(
+    () => text?.trim() || "I'm working on that for you right now...",
+    [text],
+  )
+
+  if (variant === 'image-generating') {
+    return (
+      <div className={cn('flex max-w-3xl flex-col gap-3', className)} role="status" aria-live="polite">
+        <p className="text-[15px] leading-relaxed text-gray-800 dark:text-gray-200">{resolvedImageText}</p>
+        <ImageGeneratingCard />
+      </div>
+    )
+  }
 
   return (
     <div className={cn('flex max-w-xl flex-col gap-3', className)} role="status" aria-live="polite">

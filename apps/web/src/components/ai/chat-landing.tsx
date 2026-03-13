@@ -117,12 +117,28 @@ type SubmitPromptOptions = {
   silent?: boolean
 }
 
+type LandingGreeting = {
+  headerTemplate: string
+  subtext: string
+}
+
+type TimedGreeting = LandingGreeting & {
+  isEligible: (now: Date) => boolean
+}
+
 const webSearchKeywordPattern = /\b(research|search)\b/i
+const imageGenerationKeywordPattern =
+  /(make|generate|create|draw|design)\s+(?:me\s+)?(?:(?:an?|some)\s+)?(?:image|images|picture|pictures|photo|photos|illustration|illustrations|artwork|artworks)\b/i
 const assistantRequestTimeoutMs = 45_000
 const defaultThinkingText = 'LoveChat is thinking...'
 const thinkingRevealDelayMs = 1200
 const attachmentTextContentLimit = 20_000
 const attachmentImageDataUrlLimit = 6_000_000
+const greetingNameToken = '{name}'
+const assistantImageMarkdownRegex =
+  /!\[[^\]]*\]\((?:<(data:image\/[^>]+|https?:\/\/[^>]+)>|(data:image\/[^)\s]+|https?:\/\/[^)\s]+))\)/gi
+const assistantImageDataUrlRegex = /data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi
+const assistantImageHttpUrlRegex = /https?:\/\/[^\s)>'"]+\.(?:png|jpg|jpeg|webp|gif)(?:\?[^\s)>'"]*)?/gi
 
 const suggestionsData: Record<Topic, string[]> = {
   Research: [
@@ -160,6 +176,90 @@ const suggestionsData: Record<Topic, string[]> = {
     'Code a React component for a customizable to-do list.',
     'Code a SQL query to find the top 5 highest-paying customers.',
   ],
+}
+
+const baseLandingGreetings: LandingGreeting[] = [
+  { headerTemplate: 'Workspace loaded and ready, {name}.', subtext: 'What are we engineering today?' },
+  { headerTemplate: 'Blank canvas, {name}.', subtext: "What's the next big idea?" },
+  { headerTemplate: 'All systems go, {name}.', subtext: "Let's build something awesome." },
+  { headerTemplate: 'Focus mode engaged, {name}.', subtext: 'What are we solving first?' },
+  { headerTemplate: 'Welcome back, {name}.', subtext: 'Where did we leave off?' },
+  { headerTemplate: 'Hey, {name}.', subtext: "What's the move today?" },
+  { headerTemplate: 'Good to see you, {name}.', subtext: 'How can I help right now?' },
+  { headerTemplate: 'Ready when you are, {name}.', subtext: 'Type away.' },
+  { headerTemplate: "I'm fully charged, {name}.", subtext: "Let's make some magic happen." },
+  { headerTemplate: 'Greetings, {name}.', subtext: 'Test me with a hard prompt.' },
+  { headerTemplate: 'Standing by, {name}.', subtext: 'Give me a challenge.' },
+  { headerTemplate: 'Brain synapses firing, {name}?', subtext: 'Throw your toughest problem at me.' },
+  { headerTemplate: 'Ready for a challenge, {name}?', subtext: "Let's solve today's puzzle." },
+]
+
+const timedLandingGreetings: TimedGreeting[] = [
+  {
+    headerTemplate: 'Burning the midnight oil, {name}?',
+    subtext: "I'm awake if you are. Let's get to work.",
+    isEligible: (now) => now.getHours() >= 22 || now.getHours() < 5,
+  },
+  {
+    headerTemplate: 'Early bird gets the worm, {name}.',
+    subtext: "Coffee in hand? Let's tackle the day.",
+    isEligible: (now) => now.getHours() >= 5 && now.getHours() < 11,
+  },
+  {
+    headerTemplate: 'Afternoon momentum, {name}.',
+    subtext: 'What are we shipping today?',
+    isEligible: (now) => now.getHours() >= 11 && now.getHours() < 17,
+  },
+  {
+    headerTemplate: 'Evening sprint, {name}.',
+    subtext: 'What should we wrap up tonight?',
+    isEligible: (now) => now.getHours() >= 17 && now.getHours() < 22,
+  },
+  {
+    headerTemplate: 'Happy Friday, {name}.',
+    subtext: "Let's wrap things up strong.",
+    isEligible: (now) => now.getDay() === 5,
+  },
+  {
+    headerTemplate: 'Mid-week momentum, {name}.',
+    subtext: 'What are we pushing over the line?',
+    isEligible: (now) => {
+      const day = now.getDay()
+      return day === 3 || day === 4
+    },
+  },
+]
+
+const initialLandingGreeting: LandingGreeting = baseLandingGreetings[0]
+
+function chooseRandom<T>(items: readonly T[]) {
+  const index = Math.floor(Math.random() * items.length)
+  return items[index]
+}
+
+function pickLandingGreeting(previous?: LandingGreeting): LandingGreeting {
+  const now = new Date()
+  const contextualGreetings = timedLandingGreetings
+    .filter((entry) => entry.isEligible(now))
+    .map(({ headerTemplate, subtext }) => ({ headerTemplate, subtext }))
+  const availableGreetings = [...baseLandingGreetings, ...contextualGreetings]
+
+  let nextGreeting = chooseRandom(availableGreetings)
+
+  if (previous && availableGreetings.length > 1) {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (
+        nextGreeting.headerTemplate !== previous.headerTemplate ||
+        nextGreeting.subtext !== previous.subtext
+      ) {
+        break
+      }
+
+      nextGreeting = chooseRandom(availableGreetings)
+    }
+  }
+
+  return nextGreeting
 }
 
 function getInitials(name: string) {
@@ -307,6 +407,124 @@ function escapeHtml(value: string) {
 
 function getAssistantRenderableContent(content: string) {
   return parseVisualizationContent(content)
+}
+
+function extractAssistantImageUrls(content: string) {
+  const urls: string[] = []
+  const seen = new Set<string>()
+
+  for (const match of content.matchAll(assistantImageMarkdownRegex)) {
+    const url = (match[1] ?? match[2] ?? '').trim()
+    if (!url || seen.has(url)) {
+      continue
+    }
+
+    seen.add(url)
+    urls.push(url)
+  }
+
+  for (const match of content.matchAll(assistantImageDataUrlRegex)) {
+    const url = (match[0] ?? '').trim()
+    if (!url || seen.has(url)) {
+      continue
+    }
+
+    seen.add(url)
+    urls.push(url)
+  }
+
+  for (const match of content.matchAll(assistantImageHttpUrlRegex)) {
+    const url = (match[0] ?? '').trim()
+    if (!url || seen.has(url)) {
+      continue
+    }
+
+    seen.add(url)
+    urls.push(url)
+  }
+
+  return urls
+}
+
+function stripAssistantImageMarkdown(content: string) {
+  return content
+    .replace(assistantImageMarkdownRegex, '')
+    .replace(assistantImageDataUrlRegex, '')
+    .replace(assistantImageHttpUrlRegex, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function inferImageExtensionFromUrl(url: string) {
+  if (url.startsWith('data:image/')) {
+    const mimeMatch = url.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,/i)
+    const raw = mimeMatch?.[1]?.toLowerCase() ?? 'png'
+    return raw === 'jpeg' ? 'jpg' : raw
+  }
+
+  const path = url.split('?')[0] ?? ''
+  const extMatch = path.match(/\.([a-zA-Z0-9]+)$/)
+  const ext = extMatch?.[1]?.toLowerCase()
+  if (!ext) {
+    return 'png'
+  }
+
+  return ext === 'jpeg' ? 'jpg' : ext
+}
+
+function triggerBrowserDownload(href: string, fileName: string) {
+  const anchor = document.createElement('a')
+  anchor.href = href
+  anchor.download = fileName
+  anchor.rel = 'noopener noreferrer'
+  anchor.style.display = 'none'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+}
+
+async function downloadAssistantImage(url: string) {
+  const extension = inferImageExtensionFromUrl(url)
+  const fileName = `lovechat-image-${Date.now()}.${extension}`
+
+  if (url.startsWith('data:image/')) {
+    triggerBrowserDownload(url, fileName)
+    return
+  }
+
+  try {
+    const response = await fetch(url)
+    if (!response.ok) {
+      throw new Error('Unable to fetch image for download')
+    }
+
+    const blob = await response.blob()
+    const objectUrl = URL.createObjectURL(blob)
+    triggerBrowserDownload(objectUrl, fileName)
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000)
+    return
+  } catch {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+}
+
+async function copyAssistantImageToClipboard(url: string) {
+  if (!navigator.clipboard || typeof ClipboardItem === 'undefined') {
+    throw new Error('Image clipboard is not supported in this browser')
+  }
+
+  const response = await fetch(url)
+  if (!response.ok) {
+    throw new Error('Unable to fetch image for clipboard')
+  }
+
+  const blob = await response.blob()
+  const imageType = blob.type.startsWith('image/') ? blob.type : 'image/png'
+  const clipboardItem = new ClipboardItem({
+    [imageType]: blob,
+  })
+
+  await navigator.clipboard.write([clipboardItem])
 }
 
 function getAssistantCopyContent(content: string) {
@@ -506,7 +724,7 @@ function getSessionBucketLabel(updatedAt: string) {
 function ChatLanding() {
   const navigate = useNavigate()
   const apiBaseUrl = useMemo(() => import.meta.env.VITE_API_URL ?? 'http://localhost:4000', [])
-  const [selectedModel, setSelectedModel] = useState('GPT-4o')
+  const [selectedModel, setSelectedModel] = useState('gpt-5')
   const [activeTopic, setActiveTopic] = useState<Topic | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [fullName, setFullName] = useState('')
@@ -532,6 +750,7 @@ function ChatLanding() {
   const [thinkingText, setThinkingText] = useState(defaultThinkingText)
   const [showThinking, setShowThinking] = useState(false)
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
+  const [landingGreeting, setLandingGreeting] = useState<LandingGreeting>(initialLandingGreeting)
   const messageListRef = useRef<HTMLDivElement | null>(null)
   const renameInputRef = useRef<HTMLInputElement | null>(null)
   const copyTimeoutRef = useRef<number | null>(null)
@@ -554,6 +773,13 @@ function ChatLanding() {
   const avatarNameSource = useMemo(() => fullName.trim() || nickname.trim(), [fullName, nickname])
   const avatarInitials = useMemo(() => getInitials(avatarNameSource), [avatarNameSource])
   const firstName = useMemo(() => getFirstName(fullName, nickname), [fullName, nickname])
+  const greetingHeaderParts = useMemo(() => {
+    const [beforeName, afterName = ''] = landingGreeting.headerTemplate.split(greetingNameToken)
+    return {
+      beforeName,
+      afterName,
+    }
+  }, [landingGreeting.headerTemplate])
   const activeChatTitle = useMemo(() => {
     return chatSessions.find((session) => session.id === activeSessionId)?.title ?? 'New chat'
   }, [chatSessions, activeSessionId])
@@ -575,6 +801,23 @@ function ChatLanding() {
     const activeStreamingMessage = messages.find((message) => message.id === streamingMessageId)
     return activeStreamingMessage?.content ?? ''
   }, [messages, streamingMessageId])
+
+  useEffect(() => {
+    setLandingGreeting((previous) => pickLandingGreeting(previous))
+  }, [])
+
+  const isImageGenerationThinking = useMemo(() => {
+    if (!isLoading) {
+      return false
+    }
+
+    const lastUserMessage = [...messages].reverse().find((message) => message.role === 'user')
+    if (!lastUserMessage) {
+      return false
+    }
+
+    return imageGenerationKeywordPattern.test(lastUserMessage.content)
+  }, [isLoading, messages])
 
   function getSessionToken() {
     return window.localStorage.getItem('lovechat_session_token')
@@ -1044,6 +1287,7 @@ function ChatLanding() {
     setChatSessions((previousSessions) => sortSessionsByUpdatedAt([createdSession, ...previousSessions]))
     setActiveSessionId(createdSession.id)
     setMessages([])
+    setLandingGreeting((previous) => pickLandingGreeting(previous))
     setPrompt('')
     setEditingMessageId(null)
     setEditingDraft('')
@@ -1155,6 +1399,7 @@ function ChatLanding() {
     if (remaining.length === 0) {
       setActiveSessionId(null)
       setMessages([])
+      setLandingGreeting((previous) => pickLandingGreeting(previous))
       return
     }
 
@@ -1871,6 +2116,7 @@ function ChatLanding() {
     setIsClearDialogOpen(false)
 
     setMessages([])
+    setLandingGreeting((previous) => pickLandingGreeting(previous))
     setPrompt('')
     setActiveTopic(null)
     setEditingMessageId(null)
@@ -2005,6 +2251,33 @@ function ChatLanding() {
       }, 1800)
     } catch {
       setErrorMessage('Unable to copy response to clipboard')
+    }
+  }
+
+  async function handleCopyAssistantResponse(message: ChatMessage) {
+    const imageUrls = extractAssistantImageUrls(message.content)
+    const markdownWithoutImages = stripAssistantImageMarkdown(message.content)
+    const parsed = getAssistantRenderableContent(markdownWithoutImages)
+    const isImageOnly = imageUrls.length > 0 && parsed.markdown.trim().length === 0 && parsed.charts.length === 0
+
+    if (!isImageOnly) {
+      await handleCopyMessage(message.id, getAssistantCopyContent(message.content))
+      return
+    }
+
+    try {
+      await copyAssistantImageToClipboard(imageUrls[0])
+      setCopiedMessageId(message.id)
+
+      if (copyTimeoutRef.current !== null) {
+        window.clearTimeout(copyTimeoutRef.current)
+      }
+
+      copyTimeoutRef.current = window.setTimeout(() => {
+        setCopiedMessageId(null)
+      }, 1800)
+    } catch {
+      setErrorMessage('Unable to copy image to clipboard')
     }
   }
 
@@ -2183,12 +2456,14 @@ function ChatLanding() {
         <div className={`flex min-h-0 w-full flex-1 flex-col ${messages.length === 0 ? 'justify-center' : ''}`}>
           {messages.length === 0 ? (
             <div className="mx-auto w-full max-w-3xl">
-              <div className="mb-8 text-center">
-                <h1 className="text-[36px] leading-tight font-semibold tracking-tight text-black md:text-[44px] dark:text-gray-100">
-                  Good afternoon, <span className="lovechat-accent-text">{firstName}</span>.
+              <div className="mx-auto mb-8 w-full max-w-5xl text-center">
+                <h1 className="overflow-hidden text-ellipsis whitespace-nowrap text-[36px] leading-tight font-semibold tracking-tight text-black md:text-[44px] dark:text-gray-100">
+                  {greetingHeaderParts.beforeName}
+                  <span className="lovechat-accent-text">{firstName}</span>
+                  {greetingHeaderParts.afterName}
                 </h1>
-                <h2 className="text-[36px] leading-tight font-normal tracking-tight text-black md:text-[44px] dark:text-gray-100">
-                  How can I help you today?
+                <h2 className="overflow-hidden text-ellipsis whitespace-nowrap text-[36px] leading-tight font-normal tracking-tight text-black md:text-[44px] dark:text-gray-100">
+                  {landingGreeting.subtext}
                 </h2>
               </div>
 
@@ -2335,8 +2610,10 @@ function ChatLanding() {
                             streamingMessageId === message.id
                               ? (stream || message.content)
                               : message.content
-                          const parsedContent = getAssistantRenderableContent(renderedContent)
-                          const hasRenderableContent = parsedContent.markdown.trim().length > 0
+                          const imageUrls = extractAssistantImageUrls(renderedContent)
+                          const markdownWithoutImages = stripAssistantImageMarkdown(renderedContent)
+                          const parsedContent = getAssistantRenderableContent(markdownWithoutImages)
+                          const hasRenderableContent = parsedContent.markdown.trim().length > 0 || imageUrls.length > 0
                           const hasVisualizations = parsedContent.charts.length > 0
                           const hasCitations = Boolean(message.citations && message.citations.length > 0)
                           const showActions = hasRenderableContent || hasCitations || hasVisualizations
@@ -2350,6 +2627,38 @@ function ChatLanding() {
                             </Markdown>
                           </div>
                         ) : null}
+
+                        {imageUrls.length > 0
+                          ? imageUrls.map((url, index) => (
+                              <div
+                                key={`${message.id}-image-${index}`}
+                                className="group/img relative w-full max-w-lg overflow-hidden rounded-[20px] border border-[#E5E5E5] bg-gray-50 shadow-sm dark:border-gray-700 dark:bg-[#2f2f2f]"
+                              >
+                                <img
+                                  src={url}
+                                  alt={`Generated image ${index + 1}`}
+                                  className="aspect-video h-auto w-full object-cover transition-transform duration-700 group-hover/img:scale-105"
+                                  loading="lazy"
+                                />
+
+                                <div className="absolute right-3 top-3 flex gap-2 opacity-0 transition-opacity duration-200 group-hover/img:opacity-100">
+                                  <button
+                                    type="button"
+                                    onClick={() => void downloadAssistantImage(url)}
+                                    aria-label="Download image"
+                                    title="Download"
+                                    className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/80 text-gray-800 shadow-sm backdrop-blur-md transition-all hover:bg-white hover:text-black focus:outline-none dark:bg-black/60 dark:text-gray-200 dark:hover:bg-black/80 dark:hover:text-white"
+                                  >
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                      <polyline points="7 10 12 15 17 10" />
+                                      <line x1="12" y1="15" x2="12" y2="3" />
+                                    </svg>
+                                  </button>
+                                </div>
+                              </div>
+                            ))
+                          : null}
 
                         {hasVisualizations
                           ? parsedContent.charts.map((chart) => (
@@ -2375,7 +2684,7 @@ function ChatLanding() {
 
                           <button
                             type="button"
-                            onClick={() => void handleCopyMessage(message.id, getAssistantCopyContent(message.content))}
+                            onClick={() => void handleCopyAssistantResponse(message)}
                             className={`p-1 transition-colors ${copiedMessageId === message.id ? 'text-green-500' : 'text-gray-400 hover:text-gray-600'}`}
                             aria-label="Copy response"
                             title="Copy"
@@ -2408,7 +2717,11 @@ function ChatLanding() {
                 )}
 
                 {isLoading && showThinking && activeStreamingContent.trim().length === 0 ? (
-                  <AIThinking className="w-full max-w-[90%] pt-1" text={thinkingText} />
+                  <AIThinking
+                    className="w-full max-w-[90%] pt-1"
+                    text={isImageGenerationThinking ? "I'm working on that for you right now..." : thinkingText}
+                    variant={isImageGenerationThinking ? 'image-generating' : 'thinking'}
+                  />
                 ) : null}
               </div>
             </div>

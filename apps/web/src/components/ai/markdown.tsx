@@ -289,6 +289,59 @@ function extractOptionalFilename({
 
 const MarkdownRenderContext = React.createContext<{ inTableCell: boolean }>({ inTableCell: false });
 
+function inferImageExtensionFromUrl(url: string): string {
+  if (url.startsWith("data:image/")) {
+    const mimeMatch = url.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,/i);
+    const raw = mimeMatch?.[1]?.toLowerCase() ?? "png";
+    return raw === "jpeg" ? "jpg" : raw;
+  }
+
+  const path = url.split("?")[0] ?? "";
+  const extMatch = path.match(/\.([a-zA-Z0-9]+)$/);
+  const ext = extMatch?.[1]?.toLowerCase();
+  if (!ext) {
+    return "png";
+  }
+
+  return ext === "jpeg" ? "jpg" : ext;
+}
+
+function triggerBrowserDownload(href: string, fileName: string) {
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = fileName;
+  anchor.rel = "noopener noreferrer";
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
+async function downloadImage(url: string) {
+  const extension = inferImageExtensionFromUrl(url);
+  const fileName = `lovechat-image-${Date.now()}.${extension}`;
+
+  if (url.startsWith("data:image/")) {
+    triggerBrowserDownload(url, fileName);
+    return;
+  }
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error("Unable to fetch image for download");
+    }
+
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    triggerBrowserDownload(objectUrl, fileName);
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    return;
+  } catch {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+}
+
 const DEFAULT_COMPONENTS: Partial<Components> = {
   h1: ({ children }) => <h1 className="mt-7 mb-4 text-3xl leading-tight font-semibold tracking-tight text-foreground first:mt-0">{children}</h1>,
   h2: ({ children }) => <h2 className="mt-6 mb-3 text-2xl leading-tight font-semibold tracking-tight text-foreground first:mt-0">{children}</h2>,
@@ -315,6 +368,53 @@ const DEFAULT_COMPONENTS: Partial<Components> = {
       {children}
     </a>
   ),
+  img: ({ src, alt }) => {
+    if (!src) {
+      return null;
+    }
+
+    const resolvedAlt = typeof alt === "string" && alt.trim() ? alt.trim() : "Generated image";
+
+    return (
+      <div className="group/img relative w-full max-w-lg overflow-hidden rounded-[20px] border border-[#E5E5E5] bg-gray-50 shadow-sm dark:border-gray-700 dark:bg-[#2f2f2f]">
+        <img
+          src={src}
+          alt={resolvedAlt}
+          className="aspect-video h-auto w-full object-cover transition-transform duration-700 group-hover/img:scale-105"
+          loading="lazy"
+        />
+
+        <div className="absolute right-3 top-3 flex gap-2 opacity-0 transition-opacity duration-200 group-hover/img:opacity-100">
+          <button
+            type="button"
+            onClick={() => void downloadImage(src)}
+            aria-label="Download image"
+            title="Download"
+            className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/80 text-gray-800 shadow-sm backdrop-blur-md transition-all hover:bg-white hover:text-black focus:outline-none dark:bg-black/60 dark:text-gray-200 dark:hover:bg-black/80 dark:hover:text-white"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            aria-label="Generate variations"
+            title="Variations"
+            className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/80 text-gray-800 shadow-sm backdrop-blur-md transition-all hover:bg-white hover:text-black focus:outline-none dark:bg-black/60 dark:text-gray-200 dark:hover:bg-black/80 dark:hover:text-white"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M21 2v6h-6" />
+              <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+              <path d="M3 22v-6h6" />
+              <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    );
+  },
   hr: () => <hr className="my-6 border-border" />,
   table: ({ children }) => (
     <div className="my-4 overflow-x-auto">
@@ -496,6 +596,12 @@ function MarkdownComponent({ children, className, components = DEFAULT_COMPONENT
   // This prevents KaTeX from trying to parse programming operators like &&, ||
   // Only match clearly programming-specific operators, not mathematical ones
   const finalProcessedContent = useMemo(() => {
+    // Preserve markdown image syntax exactly as-is. The math normalization below can
+    // accidentally rewrite image payloads (especially data URLs), causing broken output.
+    if (/!\[[^\]]*\]\((?:<(?:data:image\/|https?:\/\/)[^>]+>|(?:data:image\/|https?:\/\/)[^)]+)\)/i.test(processedContent)) {
+      return processedContent;
+    }
+
     let processed = normalizeBareUnicodeMath(processedContent);
     const isBareLatexTableCell = (content: string) => {
       const trimmed = content.trim();

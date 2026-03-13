@@ -421,6 +421,34 @@ function shouldUseWebSearch(messages: Array<{ role: 'system' | 'user' | 'assista
   return /\b(research|search)\b/i.test(lastUserMessage.content)
 }
 
+function shouldUseImageGeneration(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>) {
+  const lastUserMessage = [...messages].reverse().find((message) => message.role === 'user')
+  if (!lastUserMessage) {
+    return false
+  }
+
+  const content = lastUserMessage.content.toLowerCase()
+  return /(make|generate|create|draw|design)\s+(?:me\s+)?(?:(?:an?|some)\s+)?(?:image|images|picture|pictures|photo|photos|illustration|illustrations|artwork|artworks)\b/.test(content)
+}
+
+function isLikelyOpenAITextModel(model: string) {
+  const normalized = model.trim().toLowerCase()
+  return normalized.startsWith('gpt-') || /^o\d/.test(normalized)
+}
+
+function resolveGenerationModel(
+  requestedModel: string | undefined,
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+) {
+  const textModel = resolveModel(requestedModel)
+
+  if (isLikelyOpenAITextModel(textModel) && shouldUseImageGeneration(messages)) {
+    return env.OPENAI_IMAGE_MODEL
+  }
+
+  return textModel
+}
+
 function formatAttachmentSize(size: number) {
   if (size < 1024) {
     return `${size} B`
@@ -811,11 +839,102 @@ function sanitizeAssistantText(text: string) {
     cleanedLines.push(line)
   }
 
-  return cleanedLines
-    .join('\n')
+  const normalizedText = cleanedLines.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+
+  // Keep markdown image syntax intact. Stripping markdown links would remove
+  // the image URL and break rendering in chat.
+  if (/!\[[^\]]*\]\((?:<(?:data:image\/|https?:\/\/)[^>]+>|(?:data:image\/|https?:\/\/)[^)]+)\)/i.test(normalizedText)) {
+    return normalizedText
+  }
+
+  return normalizedText
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/gi, '$1')
     .replace(/\s*\((?:https?:\/\/)?(?:www\.)?[a-z0-9.-]+\.[a-z]{2,}(?:\/[^)]*)?\)/gi, '')
-    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function collectGeneratedImageUrls(input: unknown) {
+  const urls: string[] = []
+  const seen = new Set<string>()
+  const visited = new WeakSet<object>()
+
+  const addUrl = (candidate: string) => {
+    const trimmed = candidate.trim()
+    if (!trimmed || seen.has(trimmed)) {
+      return
+    }
+
+    if (/^https?:\/\//i.test(trimmed) || /^data:image\/[a-zA-Z0-9.+-]+;base64,/i.test(trimmed)) {
+      seen.add(trimmed)
+      urls.push(trimmed)
+    }
+  }
+
+  const addDataUrl = (base64Data: string) => {
+    const trimmed = base64Data.trim()
+    if (!trimmed) {
+      return
+    }
+
+    // Accept only plausible base64 payloads to avoid treating arbitrary strings
+    // as image bytes.
+    if (!/^[A-Za-z0-9+/=]+$/.test(trimmed) || trimmed.length < 128) {
+      return
+    }
+
+    addUrl(`data:image/png;base64,${trimmed}`)
+  }
+
+  const visit = (node: unknown) => {
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        visit(item)
+      }
+      return
+    }
+
+    if (!node || typeof node !== 'object') {
+      return
+    }
+
+    if (visited.has(node)) {
+      return
+    }
+    visited.add(node)
+
+    const record = node as Record<string, unknown>
+    const urlCandidates = [record.url, record.image_url, record.imageUrl, record.output_url, record.outputUrl]
+    for (const candidate of urlCandidates) {
+      if (typeof candidate === 'string') {
+        addUrl(candidate)
+      }
+    }
+
+    const base64Candidates = [record.b64_json, record.base64, record.image_base64]
+    for (const candidate of base64Candidates) {
+      if (typeof candidate === 'string') {
+        addDataUrl(candidate)
+      }
+    }
+
+    for (const value of Object.values(record)) {
+      visit(value)
+    }
+  }
+
+  visit(input)
+  return urls
+}
+
+function buildGeneratedImageMarkdown(imageUrls: string[]) {
+  return imageUrls
+    .map((url, index) => {
+      // Use CommonMark angle-bracket destinations so URLs with special characters
+      // don't break markdown image parsing.
+      const safeUrl = url.replace(/</g, '%3C').replace(/>/g, '%3E')
+      return `![Generated image ${index + 1}](<${safeUrl}>)`
+    })
+    .join('\n\n')
     .trim()
 }
 
@@ -1015,6 +1134,8 @@ type GenerationTaskPayload = {
   messages: Array<z.infer<typeof chatMessageSchema>>
 }
 
+const fallbackOpenAIImageModel = 'gpt-image-1'
+
 async function markGenerationFailed(generationId: string, message: string) {
   await pgPool.query(
     `
@@ -1041,7 +1162,10 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
     [payload.generationId],
   )
 
-  const tools = payload.activateWebSearch
+  const imageModelNormalized = env.OPENAI_IMAGE_MODEL.trim().toLowerCase()
+  const isImageGenerationModel = payload.model.trim().toLowerCase() === imageModelNormalized
+
+  const tools = payload.activateWebSearch && !isImageGenerationModel
     ? [
         {
           type: 'web_search' as const,
@@ -1063,63 +1187,128 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
     ),
   }
 
-  let streamedText = ''
-  let streamedFlushLength = 0
-  let streamedFlushTime = 0
-  let response: unknown = null
+  let text = ''
+  let modelThinking: string | null = null
+  let assistantSearchedWeb = false
+  let citations: SerializableCitation[] = []
+  let modelUsed = payload.model
 
-  try {
-    const stream = await (openaiClient.responses as any).stream(completionRequest)
+  if (isImageGenerationModel) {
+    const lastUserPrompt = [...payload.messages]
+      .reverse()
+      .find((message) => message.role === 'user')
+      ?.content.trim()
 
-    for await (const event of stream as AsyncIterable<{ type?: string; delta?: string }>) {
-      if (event.type !== 'response.output_text.delta' || typeof event.delta !== 'string') {
-        continue
-      }
-
-      streamedText += event.delta
-
-      const shouldFlushByLength = streamedText.length - streamedFlushLength >= 80
-      const now = Date.now()
-      const shouldFlushByTime = now - streamedFlushTime >= 600
-
-      if (shouldFlushByLength || shouldFlushByTime) {
-        await pgPool.query(
-          `
-          UPDATE chat_generations
-          SET response_text = $2, updated_at = NOW()
-          WHERE id = $1
-          `,
-          [payload.generationId, streamedText],
-        )
-        streamedFlushLength = streamedText.length
-        streamedFlushTime = now
-      }
+    if (!lastUserPrompt) {
+      await markGenerationFailed(payload.generationId, 'Image generation requires a user prompt')
+      return
     }
 
-    response = await stream.finalResponse()
-  } catch (streamError) {
-    app.log.warn(
-      {
-        generationId: payload.generationId,
-        error: streamError,
-      },
-      'openai streaming unavailable; falling back to non-streaming response',
-    )
+    let imageResponse: unknown
 
-    response = await openaiClient.responses.create(completionRequest)
+    try {
+      imageResponse = await (openaiClient.images as any).generate({
+        model: payload.model,
+        prompt: lastUserPrompt,
+        size: '1024x1024',
+      })
+    } catch (imageError) {
+      const message = imageError instanceof Error ? imageError.message.toLowerCase() : ''
+      const shouldFallback =
+        payload.model.trim().toLowerCase() !== fallbackOpenAIImageModel &&
+        (message.includes('does not exist') || message.includes('unknown model') || message.includes('invalid model'))
+
+      if (!shouldFallback) {
+        throw imageError
+      }
+
+      app.log.warn(
+        {
+          generationId: payload.generationId,
+          requestedModel: payload.model,
+          fallbackModel: fallbackOpenAIImageModel,
+          error: imageError,
+        },
+        'configured image model unavailable; retrying with fallback image model',
+      )
+
+      imageResponse = await (openaiClient.images as any).generate({
+        model: fallbackOpenAIImageModel,
+        prompt: lastUserPrompt,
+        size: '1024x1024',
+      })
+      modelUsed = fallbackOpenAIImageModel
+    }
+
+    const generatedImageUrls = collectGeneratedImageUrls(imageResponse)
+    const markdownImages = buildGeneratedImageMarkdown(generatedImageUrls)
+
+    if (!markdownImages) {
+      await markGenerationFailed(payload.generationId, 'OpenAI image generation did not return an image')
+      return
+    }
+
+    text = markdownImages
+  } else {
+    let streamedText = ''
+    let streamedFlushLength = 0
+    let streamedFlushTime = 0
+    let response: unknown = null
+
+    try {
+      const stream = await (openaiClient.responses as any).stream(completionRequest)
+
+      for await (const event of stream as AsyncIterable<{ type?: string; delta?: string }>) {
+        if (event.type !== 'response.output_text.delta' || typeof event.delta !== 'string') {
+          continue
+        }
+
+        streamedText += event.delta
+
+        const shouldFlushByLength = streamedText.length - streamedFlushLength >= 80
+        const now = Date.now()
+        const shouldFlushByTime = now - streamedFlushTime >= 600
+
+        if (shouldFlushByLength || shouldFlushByTime) {
+          await pgPool.query(
+            `
+            UPDATE chat_generations
+            SET response_text = $2, updated_at = NOW()
+            WHERE id = $1
+            `,
+            [payload.generationId, streamedText],
+          )
+          streamedFlushLength = streamedText.length
+          streamedFlushTime = now
+        }
+      }
+
+      response = await stream.finalResponse()
+    } catch (streamError) {
+      app.log.warn(
+        {
+          generationId: payload.generationId,
+          error: streamError,
+        },
+        'openai streaming unavailable; falling back to non-streaming response',
+      )
+
+      response = await openaiClient.responses.create(completionRequest)
+    }
+
+    const responseRecord = response as {
+      output?: unknown
+      output_text?: string
+    }
+
+    const extracted = extractTextAndCitations(responseRecord.output, responseRecord)
+    modelThinking = extractModelThinking(responseRecord.output)
+    const fallbackText = typeof responseRecord.output_text === 'string' ? responseRecord.output_text.trim() : ''
+    const rawText = extracted.text || fallbackText || streamedText
+    text = sanitizeAssistantText(rawText)
+    assistantSearchedWeb = extracted.searchedWeb || extracted.citations.length > 0
+    citations = extracted.citations
   }
-
-  const responseRecord = response as {
-    output?: unknown
-    output_text?: string
-  }
-
-  const extracted = extractTextAndCitations(responseRecord.output, responseRecord)
-  const modelThinking = extractModelThinking(responseRecord.output)
-  const fallbackText = typeof responseRecord.output_text === 'string' ? responseRecord.output_text.trim() : ''
-  const rawText = extracted.text || fallbackText || streamedText
-  const text = sanitizeAssistantText(rawText)
-  const assistantSearchedWeb = extracted.searchedWeb || extracted.citations.length > 0
 
   if (!text) {
     await markGenerationFailed(payload.generationId, 'OpenAI returned an empty response')
@@ -1165,16 +1354,16 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
             citations: Array.isArray(message.citations) ? message.citations : [],
             searchedWeb: Boolean(message.searchedWeb),
             thinking: null as string | null,
-            model: payload.model,
+            model: modelUsed,
           })),
         {
           role: 'assistant' as const,
           content: text,
           attachments: [],
-          citations: extracted.citations,
+          citations,
           searchedWeb: assistantSearchedWeb,
           thinking: modelThinking,
-          model: payload.model,
+          model: modelUsed,
         },
       ]
 
@@ -1226,7 +1415,7 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
       [
         payload.generationId,
         text,
-        JSON.stringify(extracted.citations),
+        JSON.stringify(citations),
         assistantSearchedWeb,
         modelThinking,
       ],
@@ -2460,7 +2649,7 @@ app.post('/chat/completions', async (request, reply) => {
     }
 
     const body = chatCompletionSchema.parse(request.body)
-    const model = resolveModel(body.model)
+    const model = resolveGenerationModel(body.model, body.messages)
     const activateWebSearch = Boolean(body.useWebSearch) || shouldUseWebSearch(body.messages)
     const activateLearningMode = Boolean(body.useLearningMode)
     const requestedSessionId = body.chatSessionId

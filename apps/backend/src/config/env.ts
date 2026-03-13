@@ -14,6 +14,7 @@ const envSchema = z.object({
   REDIS_URL: z.url(),
   OPENAI_API_KEY: z.string().trim().min(1).optional(),
   OPENAI_MODEL: z.string().trim().min(1).default('gpt-4.1-mini'),
+  OPENAI_IMAGE_MODEL: z.string().trim().min(1).default('gpt-image-1'),
   SESSION_TTL_SECONDS: z.coerce.number().int().positive().default(60 * 60 * 24 * 7),
 })
 

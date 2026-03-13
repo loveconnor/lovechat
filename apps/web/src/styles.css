@@ -243,6 +243,14 @@
   --sidebar-ring: #f97316;
 }
 
+:root.dark[data-accent="blue"],
+:root[data-theme="dark"][data-accent="blue"] {
+  --accent: color-mix(in oklab, #2563eb 28%, #0f172a 72%);
+  --accent-foreground: #dbeafe;
+  --sidebar-accent: color-mix(in oklab, #2563eb 24%, #0f172a 76%);
+  --sidebar-accent-foreground: #dbeafe;
+}
+
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --sea-ink: #d7ece8;
@@ -264,6 +272,13 @@
     --link-bg-hover: rgba(24, 44, 49, 0.8);
     --hero-a: rgba(96, 215, 207, 0.18);
     --hero-b: rgba(110, 200, 154, 0.12);
+  }
+
+  :root:not([data-theme="light"])[data-accent="blue"] {
+    --accent: color-mix(in oklab, #2563eb 28%, #0f172a 72%);
+    --accent-foreground: #dbeafe;
+    --sidebar-accent: color-mix(in oklab, #2563eb 24%, #0f172a 76%);
+    --sidebar-accent-foreground: #dbeafe;
   }
 }
 
@@ -768,4 +783,52 @@ a {
 :root[data-theme="dark"] .lovechat-shell .chat-delete-item:focus-visible,
 :root[data-theme="dark"] .lovechat-shell .chat-delete-item[data-highlighted] {
   background-color: rgba(239, 68, 68, 0.1) !important;
+}
+
+@keyframes blob {
+  0% {
+    transform: translate(0px, 0px) scale(1);
+  }
+  33% {
+    transform: translate(30px, -50px) scale(1.1);
+  }
+  66% {
+    transform: translate(-20px, 20px) scale(0.9);
+  }
+  100% {
+    transform: translate(0px, 0px) scale(1);
+  }
+}
+
+.animate-blob {
+  animation: blob 7s infinite alternate;
+}
+
+.animation-delay-2000 {
+  animation-delay: 2s;
+}
+
+.animation-delay-4000 {
+  animation-delay: 4s;
+}
+
+.lovechat-image-mesh-card .lovechat-mesh-blob {
+  mix-blend-mode: multiply;
+}
+
+.lovechat-image-mesh-card .lovechat-mesh-blob-a {
+  background-color: color-mix(in oklab, var(--primary) 50%, transparent);
+}
+
+.lovechat-image-mesh-card .lovechat-mesh-blob-b {
+  background-color: color-mix(in oklab, var(--ring) 44%, transparent);
+}
+
+.lovechat-image-mesh-card .lovechat-mesh-blob-c {
+  background-color: color-mix(in oklab, var(--primary) 36%, var(--accent) 64%);
+}
+
+.dark .lovechat-image-mesh-card .lovechat-mesh-blob,
+:root[data-theme="dark"] .lovechat-image-mesh-card .lovechat-mesh-blob {
+  mix-blend-mode: lighten;
 }
