@@ -191,7 +191,16 @@ export function ModelSelector({ selectedModel, onModelChange }: ModelSelectorPro
   const [activeProvider, setActiveProvider] = useState(providers[0].key)
   const [search, setSearch] = useState('')
   const [detailsModel, setDetailsModel] = useState<ModelEntry | null>(null)
+  const [isMobileViewport, setIsMobileViewport] = useState(() => {
+    if (typeof window === 'undefined') {
+      return false
+    }
+
+    return window.matchMedia('(max-width: 639px)').matches
+  })
   const dropdownRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const [panelShiftX, setPanelShiftX] = useState(0)
 
   const allModels = providers.flatMap((p) => p.models)
   const activeModels = search
@@ -210,6 +219,68 @@ export function ModelSelector({ selectedModel, onModelChange }: ModelSelectorPro
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
   }, [isOpen])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const mediaQuery = window.matchMedia('(max-width: 639px)')
+    const onMediaChange = (event: MediaQueryListEvent) => {
+      setIsMobileViewport(event.matches)
+    }
+
+    setIsMobileViewport(mediaQuery.matches)
+    mediaQuery.addEventListener('change', onMediaChange)
+
+    return () => {
+      mediaQuery.removeEventListener('change', onMediaChange)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isOpen) {
+      setPanelShiftX(0)
+      return
+    }
+
+    if (isMobileViewport) {
+      setPanelShiftX(0)
+      return
+    }
+
+    function updatePanelPosition() {
+      const panel = panelRef.current
+      if (!panel) {
+        return
+      }
+
+      const viewportPadding = 8
+
+      // Measure first without translation, then shift only when clipping would happen.
+      panel.style.transform = 'translateX(0px)'
+      const bounds = panel.getBoundingClientRect()
+
+      let nextShift = 0
+      if (bounds.left < viewportPadding) {
+        nextShift += viewportPadding - bounds.left
+      }
+
+      if (bounds.right > window.innerWidth - viewportPadding) {
+        nextShift -= bounds.right - (window.innerWidth - viewportPadding)
+      }
+
+      setPanelShiftX(nextShift)
+    }
+
+    const raf = window.requestAnimationFrame(updatePanelPosition)
+    window.addEventListener('resize', updatePanelPosition)
+
+    return () => {
+      window.cancelAnimationFrame(raf)
+      window.removeEventListener('resize', updatePanelPosition)
+    }
+  }, [isOpen, isMobileViewport, search, activeProvider])
 
   function handleSelect(modelKey: string) {
     onModelChange(modelKey)
@@ -243,9 +314,17 @@ export function ModelSelector({ selectedModel, onModelChange }: ModelSelectorPro
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 bottom-full z-[100] mb-2 flex w-[360px] flex-col rounded-[24px] border border-[#E5E5E5] bg-white p-3 shadow-[0_8px_30px_rgba(0,0,0,0.12)] dark:border-gray-700 dark:bg-[#212121]">
+        <div
+          ref={panelRef}
+          style={isMobileViewport ? undefined : { transform: `translateX(${panelShiftX}px)` }}
+          className={`z-[100] flex flex-col border border-[#E5E5E5] bg-white shadow-[0_8px_30px_rgba(0,0,0,0.12)] dark:border-gray-700 dark:bg-[#212121] ${
+            isMobileViewport
+              ? 'fixed inset-x-2 bottom-24 max-h-[52vh] rounded-[18px] p-2'
+              : 'absolute right-0 bottom-full mb-2 w-[min(360px,calc(100vw-1rem))] max-w-[360px] rounded-[20px] p-2.5 sm:rounded-[24px] sm:p-3'
+          }`}
+        >
           {/* Search */}
-          <div className="relative mb-3">
+          <div className="relative mb-2.5 sm:mb-3">
             <svg
               className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
               width="14"
@@ -292,7 +371,7 @@ export function ModelSelector({ selectedModel, onModelChange }: ModelSelectorPro
           )}
 
           {/* Model List */}
-          <div className="flex flex-col gap-2 max-h-[340px] overflow-y-auto pr-3 [scrollbar-width:thin] [scrollbar-color:#d1d5db_transparent] dark:[scrollbar-color:#4b5563_transparent]">
+          <div className={`flex flex-col gap-2 overflow-y-auto pr-1.5 sm:pr-3 [scrollbar-width:thin] [scrollbar-color:#d1d5db_transparent] dark:[scrollbar-color:#4b5563_transparent] ${isMobileViewport ? 'max-h-[calc(52vh-86px)]' : 'max-h-[min(56vh,340px)]'}`}>
             {activeModels.map((model) => {
               const isSelected = model.key === selectedModel
               return (
@@ -302,7 +381,7 @@ export function ModelSelector({ selectedModel, onModelChange }: ModelSelectorPro
                   tabIndex={0}
                   onClick={() => handleSelect(model.key)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSelect(model.key)}
-                  className={`flex w-full cursor-pointer flex-col rounded-[16px] border p-3.5 text-left transition-all focus:outline-none ${
+                  className={`flex w-full cursor-pointer flex-col rounded-[14px] border p-3 text-left transition-all focus:outline-none sm:rounded-[16px] sm:p-3.5 ${
                     isSelected
                       ? 'border-[#E5E5E5] bg-white shadow-sm dark:border-gray-600 dark:bg-[#2f2f2f]'
                       : 'border-transparent hover:bg-[#F9FAFB] dark:hover:bg-[#2f2f2f]'
@@ -336,7 +415,7 @@ export function ModelSelector({ selectedModel, onModelChange }: ModelSelectorPro
                       <polyline points="20 6 9 17 4 12" />
                     </svg>
                   </div>
-                  <div className="mb-2 text-[13px] leading-snug text-gray-500 dark:text-gray-400">{model.desc}</div>
+                  <div className="mb-2 line-clamp-2 text-[12px] leading-snug text-gray-500 sm:text-[13px] dark:text-gray-400">{model.desc}</div>
                   <div className="flex w-full flex-wrap items-center gap-2">
                     <span className="rounded-md border border-[#E5E5E5] px-2 py-0.5 text-[11px] font-medium text-gray-600 dark:border-gray-600 dark:text-gray-300">
                       {model.context}

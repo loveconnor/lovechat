@@ -4,6 +4,8 @@ import ThemeToggle from '#/components/ThemeToggle'
 
 type ChatHeaderProps = {
   chatTitle?: string
+  showSidebarToggle?: boolean
+  onToggleSidebar?: () => void
   onCopyLink: () => void | Promise<void>
   onExportPdf: () => void
   onExportMarkdown: () => void
@@ -14,6 +16,8 @@ type ChatHeaderProps = {
 
 function ChatHeader({
   chatTitle,
+  showSidebarToggle = false,
+  onToggleSidebar,
   onCopyLink,
   onExportPdf,
   onExportMarkdown,
@@ -55,7 +59,33 @@ function ChatHeader({
       ref={headerRef}
       className="absolute top-0 right-0 left-0 z-20 flex w-full items-center justify-between bg-white/80 p-4 backdrop-blur-sm transition-colors duration-200 md:bg-transparent dark:bg-[#212121]/80 dark:md:bg-transparent"
     >
-      <div className="flex items-center gap-2 pl-2">
+      <div className="flex items-center gap-2 pl-0 sm:pl-2">
+        {showSidebarToggle ? (
+          <button
+            type="button"
+            onClick={onToggleSidebar}
+            className="lovechat-accent-surface flex h-9 w-9 items-center justify-center rounded-lg text-gray-600 transition-colors focus:outline-none md:hidden dark:text-gray-300"
+            aria-label="Toggle sidebar"
+            title="Toggle sidebar"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <line x1="3" y1="18" x2="21" y2="18" />
+            </svg>
+          </button>
+        ) : null}
         <span className="text-[20px] font-bold tracking-tight text-gray-900 dark:text-gray-100">LoveChat</span>
       </div>
 

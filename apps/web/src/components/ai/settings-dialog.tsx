@@ -702,19 +702,19 @@ function SettingsDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm dark:bg-black/60 md:p-6"
+      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 p-2 backdrop-blur-sm dark:bg-black/60 sm:p-4 md:p-6"
       onClick={(event) => {
         if (event.target === event.currentTarget) {
           onClose()
         }
       }}
     >
-      <div className="relative flex h-[85vh] max-h-[700px] w-full max-w-4xl overflow-hidden rounded-[24px] border border-transparent bg-white shadow-2xl dark:border-gray-700 dark:bg-[#262626]">
+      <div className="relative flex h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-[20px] border border-transparent bg-white shadow-2xl dark:border-gray-700 dark:bg-[#262626] md:h-[85vh] md:max-h-[700px] md:flex-row md:rounded-[24px]">
         <button
           type="button"
           aria-label="Close settings"
           onClick={onClose}
-          className="absolute top-4 right-4 z-10 rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-800 focus:outline-none dark:hover:bg-white/10 dark:hover:text-gray-100"
+          className="absolute top-3 right-3 z-20 rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-800 focus:outline-none dark:hover:bg-white/10 dark:hover:text-gray-100 md:top-4 md:right-4"
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <line x1="18" y1="6" x2="6" y2="18" />
@@ -722,35 +722,37 @@ function SettingsDialog({
           </svg>
         </button>
 
-        <div className="flex w-1/3 max-w-[240px] shrink-0 flex-col gap-1.5 overflow-y-auto border-r border-[#E5E5E5] bg-[#F9FAFB] p-4 dark:border-gray-700 dark:bg-[#2d2d2d] md:p-5">
-          <h2 className="mb-4 px-2 text-xl font-bold tracking-tight text-gray-900 dark:text-gray-100">Settings</h2>
+        <div className="flex w-full shrink-0 flex-col gap-2 border-b border-[#E5E5E5] bg-[#F9FAFB] p-3 dark:border-gray-700 dark:bg-[#2d2d2d] md:w-1/3 md:max-w-[240px] md:gap-1.5 md:overflow-y-auto md:border-r md:border-b-0 md:p-5">
+          <h2 className="mb-1 px-1 text-xl font-bold tracking-tight text-gray-900 dark:text-gray-100 md:mb-4 md:px-2">Settings</h2>
 
-          {TABS.map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => setActiveTab(tab)}
-              className={`flex items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-left text-[14px] transition-colors focus:outline-none ${
-                activeTab === tab
-                  ? 'bg-gray-200 font-semibold text-gray-900 dark:bg-[#3a3a3a] dark:text-white'
-                  : 'font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-[#343434]'
-              }`}
-            >
-              {TAB_ICONS[tab]}
-              {TAB_LABELS[tab]}
-            </button>
-          ))}
+          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 md:mx-0 md:flex-col md:gap-1.5 md:overflow-visible md:px-0 md:pb-0">
+            {TABS.map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setActiveTab(tab)}
+                className={`flex shrink-0 items-center gap-2.5 rounded-[10px] px-3 py-2 text-left text-[14px] whitespace-nowrap transition-colors focus:outline-none md:w-full md:py-2.5 ${
+                  activeTab === tab
+                    ? 'bg-gray-200 font-semibold text-gray-900 dark:bg-[#3a3a3a] dark:text-white'
+                    : 'font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-[#343434]'
+                }`}
+              >
+                {TAB_ICONS[tab]}
+                {TAB_LABELS[tab]}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <div className="relative flex-1 overflow-y-auto p-6 md:p-10">
+        <div className="relative flex-1 overflow-y-auto p-4 sm:p-5 md:p-10">
           {activeTab === 'general' ? (
-            <div className="flex flex-col gap-10">
+            <div className="flex flex-col gap-8 md:gap-10">
               <section>
-                <h3 className="mb-6 border-b border-[#E5E5E5] pb-4 text-[22px] font-bold text-gray-900 dark:border-gray-700 dark:text-white">
+                <h3 className="mb-5 border-b border-[#E5E5E5] pb-3 text-[22px] font-bold text-gray-900 dark:border-gray-700 dark:text-white md:mb-6 md:pb-4">
                   Profile
                 </h3>
 
-                <div className="mb-6 flex items-center gap-5">
+                <div className="mb-6 flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:gap-5">
                   <div className="relative shrink-0">
                     <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-full bg-gray-200 text-[22px] font-bold text-gray-700 dark:bg-[#333] dark:text-gray-200">
                       {avatarSrc ? (
@@ -815,7 +817,7 @@ function SettingsDialog({
                   {isProfileLoading ? (
                     <p className="text-[12px] text-gray-500 dark:text-gray-400">Loading account details...</p>
                   ) : null}
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div className="flex flex-col gap-1.5">
                       <label className="text-[13px] font-medium text-gray-700 dark:text-gray-300">First name</label>
                       <Input
@@ -873,13 +875,13 @@ function SettingsDialog({
                 <h3 className="mb-6 text-[18px] font-bold text-gray-900 dark:text-white">Appearance</h3>
 
                 <div className="flex flex-col gap-6">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <div className="text-[15px] font-semibold text-gray-900 dark:text-gray-100">Theme</div>
                       <div className="mt-0.5 text-[13px] text-gray-500 dark:text-gray-400">Select how you want LoveChat to look.</div>
                     </div>
                     <Select value={theme} onValueChange={handleThemeChange}>
-                      <SelectTrigger className="w-40">
+                      <SelectTrigger className="w-full sm:w-40">
                         <SelectValue className="capitalize" />
                       </SelectTrigger>
                       <SelectPopup>
@@ -890,12 +892,12 @@ function SettingsDialog({
                     </Select>
                   </div>
 
-                  <div className="flex items-start justify-between">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
                       <div className="text-[15px] font-semibold text-gray-900 dark:text-gray-100">Accent color</div>
                       <div className="mt-0.5 text-[13px] text-gray-500 dark:text-gray-400">Choose a highlight color for the interface.</div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       {ACCENT_COLORS.map((color) => (
                         <button
                           key={color.value}
@@ -919,7 +921,7 @@ function SettingsDialog({
 
           {activeTab === 'personalization' ? (
             <div>
-              <h3 className="mb-8 border-b border-[#E5E5E5] pb-4 text-[22px] font-bold text-gray-900 dark:border-gray-700 dark:text-white">
+              <h3 className="mb-6 border-b border-[#E5E5E5] pb-3 text-[22px] font-bold text-gray-900 dark:border-gray-700 dark:text-white md:mb-8 md:pb-4">
                 Personalization
               </h3>
               <div className="flex flex-col gap-6">
@@ -1111,12 +1113,12 @@ function SettingsDialog({
 
           {activeTab === 'data' ? (
             <div>
-              <h3 className="mb-8 border-b border-[#E5E5E5] pb-4 text-[22px] font-bold text-gray-900 dark:border-gray-700 dark:text-white">
+              <h3 className="mb-6 border-b border-[#E5E5E5] pb-3 text-[22px] font-bold text-gray-900 dark:border-gray-700 dark:text-white md:mb-8 md:pb-4">
                 Data Controls
               </h3>
               <div className="flex flex-col gap-6">
-                <div className="flex items-center justify-between">
-                  <div className="pr-8">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="pr-0 sm:pr-8">
                     <div className="text-[15px] font-semibold text-gray-900 dark:text-gray-100">Chat History</div>
                     <div className="mt-1 text-[13px] leading-relaxed text-gray-500 dark:text-gray-400">
                       Save new chats to your history. Unsaved chats will be deleted from our systems within 30 days.
@@ -1135,7 +1137,7 @@ function SettingsDialog({
 
                 <div className="h-px w-full bg-[#E5E5E5] dark:bg-gray-700" />
 
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <div className="text-[15px] font-semibold text-gray-900 dark:text-gray-100">Export Data</div>
                     <div className="mt-0.5 text-[13px] text-gray-500 dark:text-gray-400">Download a copy of your conversations.</div>
@@ -1154,7 +1156,7 @@ function SettingsDialog({
 
                 <div className="h-px w-full bg-[#E5E5E5] dark:bg-gray-700" />
 
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <div className="text-[15px] font-semibold text-gray-900 dark:text-gray-100">Delete All Chats</div>
                     <div className="mt-0.5 text-[13px] text-gray-500 dark:text-gray-400">Permanently remove all conversation history.</div>
@@ -1173,7 +1175,7 @@ function SettingsDialog({
 
                 <div className="h-px w-full bg-[#E5E5E5] dark:bg-gray-700" />
 
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <div className="text-[15px] font-semibold text-red-600 dark:text-red-400">Delete Account</div>
                     <div className="mt-0.5 text-[13px] text-gray-500 dark:text-gray-400">Permanently delete your account and all data.</div>

@@ -6,6 +6,7 @@ import { ChatHeader } from '#/components/ai/chat-header'
 import { ChatInput } from '#/components/ai/chat-input'
 import { ChatSidebar } from '#/components/ai/chat-sidebar'
 import { Markdown } from '#/components/ai/markdown'
+import { SettingsDialog } from '#/components/ai/settings-dialog'
 import { ChartCard } from '#/components/ai/visualization/chart-card'
 import { parseVisualizationContent } from '#/components/ai/visualization/parse'
 import AIThinking from '#/components/ai/thinking'
@@ -132,6 +133,7 @@ const imageGenerationKeywordPattern =
 const assistantRequestTimeoutMs = 45_000
 const defaultThinkingText = 'LoveChat is thinking...'
 const thinkingRevealDelayMs = 1200
+const mobileLayoutMediaQuery = '(max-width: 767px)'
 const attachmentTextContentLimit = 20_000
 const attachmentImageDataUrlLimit = 6_000_000
 const greetingNameToken = '{name}'
@@ -726,7 +728,15 @@ function ChatLanding() {
   const apiBaseUrl = useMemo(() => import.meta.env.VITE_API_URL ?? 'http://localhost:4000', [])
   const [selectedModel, setSelectedModel] = useState('gpt-5')
   const [activeTopic, setActiveTopic] = useState<Topic | null>(null)
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [isMobileLayout, setIsMobileLayout] = useState(() => {
+    if (typeof window === 'undefined') {
+      return false
+    }
+
+    return window.matchMedia(mobileLayoutMediaQuery).matches
+  })
+  const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true)
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [fullName, setFullName] = useState('')
   const [nickname, setNickname] = useState('')
   const [avatarDataUrl, setAvatarDataUrl] = useState<string | null>(null)
@@ -741,6 +751,7 @@ function ChatLanding() {
   const [renameDialogDraft, setRenameDialogDraft] = useState('')
   const [isRenameSaving, setIsRenameSaving] = useState(false)
   const [isClearDialogOpen, setIsClearDialogOpen] = useState(false)
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [sessionIdPendingDelete, setSessionIdPendingDelete] = useState<string | null>(null)
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
@@ -751,6 +762,7 @@ function ChatLanding() {
   const [showThinking, setShowThinking] = useState(false)
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
   const [landingGreeting, setLandingGreeting] = useState<LandingGreeting>(initialLandingGreeting)
+  const [showAllMobileSuggestions, setShowAllMobileSuggestions] = useState(false)
   const messageListRef = useRef<HTMLDivElement | null>(null)
   const renameInputRef = useRef<HTMLInputElement | null>(null)
   const copyTimeoutRef = useRef<number | null>(null)
@@ -761,6 +773,7 @@ function ChatLanding() {
   const activeGenerationMessageIdRef = useRef<string | null>(null)
   const activeGenerationContentRef = useRef('')
   const { stream, addPart, reset: resetStream, seed: seedStream } = useStream()
+  const sidebarOpen = isMobileLayout ? mobileSidebarOpen : desktopSidebarOpen
 
   const suggestions = useMemo(() => {
     if (!activeTopic) {
@@ -769,6 +782,18 @@ function ChatLanding() {
 
     return suggestionsData[activeTopic]
   }, [activeTopic])
+  const visibleSuggestions = useMemo(() => {
+    if (!isMobileLayout) {
+      return suggestions
+    }
+
+    if (showAllMobileSuggestions) {
+      return suggestions
+    }
+
+    return suggestions.slice(0, 3)
+  }, [isMobileLayout, showAllMobileSuggestions, suggestions])
+  const hiddenSuggestionCount = suggestions.length - visibleSuggestions.length
 
   const avatarNameSource = useMemo(() => fullName.trim() || nickname.trim(), [fullName, nickname])
   const avatarInitials = useMemo(() => getInitials(avatarNameSource), [avatarNameSource])
@@ -805,6 +830,45 @@ function ChatLanding() {
   useEffect(() => {
     setLandingGreeting((previous) => pickLandingGreeting(previous))
   }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const mediaQuery = window.matchMedia(mobileLayoutMediaQuery)
+    const handleMediaQueryChange = (event: MediaQueryListEvent) => {
+      setIsMobileLayout(event.matches)
+    }
+
+    setIsMobileLayout(mediaQuery.matches)
+    mediaQuery.addEventListener('change', handleMediaQueryChange)
+
+    return () => {
+      mediaQuery.removeEventListener('change', handleMediaQueryChange)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isMobileLayout || !sidebarOpen) {
+      return
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMobileSidebarOpen(false)
+      }
+    }
+
+    window.addEventListener('keydown', handleEscape)
+    return () => {
+      window.removeEventListener('keydown', handleEscape)
+    }
+  }, [isMobileLayout, sidebarOpen])
+
+  useEffect(() => {
+    setShowAllMobileSuggestions(false)
+  }, [activeTopic])
 
   const isImageGenerationThinking = useMemo(() => {
     if (!isLoading) {
@@ -1652,7 +1716,7 @@ function ChatLanding() {
   }
 
   function handleOpenSettings() {
-    setErrorMessage('Settings are coming soon.')
+    setIsSettingsOpen(true)
   }
 
   async function handleCopyShareLink() {
@@ -2412,38 +2476,68 @@ function ChatLanding() {
     }
   }
 
+  function toggleSidebar() {
+    if (isMobileLayout) {
+      setMobileSidebarOpen((current) => !current)
+      return
+    }
+
+    setDesktopSidebarOpen((current) => !current)
+  }
+
   return (
-    <main className="lovechat-shell flex h-screen overflow-hidden bg-[#F9FAFB] p-2 text-gray-900 transition-colors duration-200 md:p-3 dark:bg-[#171717] dark:text-gray-100">
-      <ChatSidebar
-        isOpen={sidebarOpen}
-        isSessionsLoading={isSessionsLoading}
-        groupedSessions={groupedSessions}
-        activeSessionId={activeSessionId}
-        avatarInitials={avatarInitials}
-        avatarImageSrc={avatarDataUrl}
-        profileName={avatarNameSource || 'Your Profile'}
-        profileFullName={fullName}
-        profileNickname={nickname}
-        onToggleSidebar={() => setSidebarOpen((current) => !current)}
-        onOpenProfile={handleOpenProfile}
-        onOpenSettings={handleOpenSettings}
-        onProfileUpdated={({ fullName: nextFullName, nickname: nextNickname, avatarDataUrl: nextAvatarDataUrl }) => {
-          setFullName(nextFullName)
-          setNickname(nextNickname)
-          setAvatarDataUrl(nextAvatarDataUrl)
-        }}
-        onLogout={handleLogout}
-        onCreateNewChat={handleCreateNewChat}
-        onOpenSession={openSession}
-        onRenameSession={handleRenameSession}
-        onDeleteSessionIntent={setSessionIdPendingDelete}
-      />
+    <main className="lovechat-shell relative flex h-screen overflow-hidden bg-[#F9FAFB] p-0 text-gray-900 transition-colors duration-200 sm:p-2 md:p-3 dark:bg-[#171717] dark:text-gray-100">
+      {isMobileLayout && sidebarOpen ? (
+        <button
+          type="button"
+          className="fixed inset-0 z-30 bg-black/30 backdrop-blur-[1px]"
+          aria-label="Close sidebar"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      ) : null}
 
       <div
-        className="relative ml-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-[24px] border border-[#E5E5E5] bg-white shadow-sm transition-all duration-300 md:ml-3 dark:border-white/10 dark:bg-[#212121]"
+        className={isMobileLayout
+          ? `fixed inset-y-0 left-0 z-40 transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`
+          : 'relative z-20'}
+      >
+        <ChatSidebar
+          isOpen={sidebarOpen}
+          isMobile={isMobileLayout}
+          isSessionsLoading={isSessionsLoading}
+          groupedSessions={groupedSessions}
+          activeSessionId={activeSessionId}
+          avatarInitials={avatarInitials}
+          avatarImageSrc={avatarDataUrl}
+          profileName={avatarNameSource || 'Your Profile'}
+          onToggleSidebar={toggleSidebar}
+          onOpenProfile={handleOpenProfile}
+          onOpenSettings={handleOpenSettings}
+          onLogout={handleLogout}
+          onCreateNewChat={async () => {
+            await handleCreateNewChat()
+            if (isMobileLayout) {
+              setMobileSidebarOpen(false)
+            }
+          }}
+          onOpenSession={async (sessionId) => {
+            await openSession(sessionId)
+            if (isMobileLayout) {
+              setMobileSidebarOpen(false)
+            }
+          }}
+          onRenameSession={handleRenameSession}
+          onDeleteSessionIntent={setSessionIdPendingDelete}
+        />
+      </div>
+
+      <div
+        className="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-none border-0 bg-white shadow-sm transition-all duration-300 md:ml-3 md:rounded-[24px] md:border md:border-[#E5E5E5] dark:border-white/10 dark:bg-[#212121]"
       >
         <ChatHeader
           chatTitle={activeChatTitle}
+          showSidebarToggle={isMobileLayout}
+          onToggleSidebar={toggleSidebar}
           onCopyLink={handleCopyShareLink}
           onExportPdf={handleExportPdf}
           onExportMarkdown={handleExportMarkdown}
@@ -2452,17 +2546,17 @@ function ChatLanding() {
           onDeleteChat={handleDeleteActiveChat}
         />
 
-        <section className="flex min-h-0 flex-1 flex-col px-4 pt-16 pb-4">
+        <section className="flex min-h-0 flex-1 flex-col px-3 pt-16 pb-3 sm:px-4 sm:pb-4">
         <div className={`flex min-h-0 w-full flex-1 flex-col ${messages.length === 0 ? 'justify-center' : ''}`}>
           {messages.length === 0 ? (
             <div className="mx-auto w-full max-w-3xl">
-              <div className="mx-auto mb-8 w-full max-w-5xl text-center">
-                <h1 className="overflow-hidden text-ellipsis whitespace-nowrap text-[36px] leading-tight font-semibold tracking-tight text-black md:text-[44px] dark:text-gray-100">
+              <div className="mx-auto mb-5 w-full max-w-5xl text-center sm:mb-8">
+                <h1 className="overflow-hidden text-ellipsis whitespace-nowrap text-[26px] leading-tight font-semibold tracking-tight text-black sm:text-[36px] md:text-[44px] dark:text-gray-100">
                   {greetingHeaderParts.beforeName}
                   <span className="lovechat-accent-text">{firstName}</span>
                   {greetingHeaderParts.afterName}
                 </h1>
-                <h2 className="overflow-hidden text-ellipsis whitespace-nowrap text-[36px] leading-tight font-normal tracking-tight text-black md:text-[44px] dark:text-gray-100">
+                <h2 className="overflow-hidden text-ellipsis whitespace-nowrap text-[26px] leading-tight font-normal tracking-tight text-black sm:text-[36px] md:text-[44px] dark:text-gray-100">
                   {landingGreeting.subtext}
                 </h2>
               </div>
@@ -2481,7 +2575,7 @@ function ChatLanding() {
                 onLearningModeChange={setLearningModeActive}
               />
 
-              <div className="z-10 mt-5 flex w-full flex-wrap items-center justify-center gap-3">
+              <div className="z-10 mt-4 flex w-full flex-wrap items-center justify-center gap-2 sm:mt-5 sm:gap-3">
                 {(Object.keys(suggestionsData) as Topic[]).map((topic) => {
                   const isActive = activeTopic === topic
 
@@ -2490,7 +2584,7 @@ function ChatLanding() {
                       key={topic}
                       type="button"
                       onClick={() => setActiveTopic(topic)}
-                      className={`rounded-[12px] border px-3.5 py-2 text-[14px] font-medium transition-colors ${isActive ? 'lovechat-accent-soft shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--ring)_22%,transparent_78%)]' : 'border-[#E5E5E5] text-slate-900 lovechat-accent-surface dark:text-slate-100'}`}
+                      className={`rounded-[12px] border px-3 py-1.5 text-[13px] font-medium transition-colors sm:px-3.5 sm:py-2 sm:text-[14px] ${isActive ? 'lovechat-accent-soft shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--ring)_22%,transparent_78%)]' : 'border-[#E5E5E5] text-slate-900 lovechat-accent-surface dark:text-slate-100'}`}
                     >
                       {topic}
                     </button>
@@ -2499,17 +2593,27 @@ function ChatLanding() {
               </div>
 
               {suggestions.length > 0 ? (
-                <div className="z-10 mt-6 flex w-full flex-col overflow-hidden rounded-[24px] border border-[#E5E5E5] text-left shadow-[0_2px_12px_rgba(0,0,0,0.02)]">
-                  {suggestions.map((text) => (
+                <div className="z-10 mt-4 flex w-full flex-col overflow-hidden rounded-[20px] border border-[#E5E5E5] text-left shadow-[0_2px_12px_rgba(0,0,0,0.02)] sm:mt-6 sm:rounded-[24px]">
+                  {visibleSuggestions.map((text) => (
                     <button
                       key={text}
                       type="button"
                       onClick={() => void submitPrompt(text)}
-                      className="lovechat-accent-surface border-b border-[#E5E5E5] bg-white px-5 py-4 text-left text-[15px] text-gray-700 transition-colors last:border-b-0"
+                      className="lovechat-accent-surface border-b border-[#E5E5E5] bg-white px-4 py-3 text-left text-[14px] text-gray-700 transition-colors last:border-b-0 sm:px-5 sm:py-4 sm:text-[15px]"
                     >
                       {text}
                     </button>
                   ))}
+
+                  {isMobileLayout && hiddenSuggestionCount > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllMobileSuggestions(true)}
+                      className="lovechat-accent-surface bg-white px-4 py-2.5 text-center text-[13px] font-medium text-gray-600 transition-colors"
+                    >
+                      Show {hiddenSuggestionCount} more
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -2758,11 +2862,23 @@ function ChatLanding() {
         </section>
 
         {messages.length === 0 ? (
-          <footer className="w-full py-6 text-center text-[13px] text-[#9CA3AF]">
+          <footer className="w-full py-4 text-center text-[12px] text-[#9CA3AF] sm:py-6 sm:text-[13px]">
             LoveChat can make mistakes. Check important info
           </footer>
         ) : null}
       </div>
+
+      <SettingsDialog
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        profileFullName={fullName}
+        profileNickname={nickname}
+        onProfileUpdated={({ fullName: nextFullName, nickname: nextNickname, avatarDataUrl: nextAvatarDataUrl }) => {
+          setFullName(nextFullName)
+          setNickname(nextNickname)
+          setAvatarDataUrl(nextAvatarDataUrl)
+        }}
+      />
 
       {sessionIdPendingDelete ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">

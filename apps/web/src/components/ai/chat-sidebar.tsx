@@ -1,7 +1,6 @@
 import { Ellipsis, Loader2, LogOut, Pencil, Plus, Search, Settings, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '#/components/ui/menu'
-import { SettingsDialog } from './settings-dialog'
 
 type ChatSidebarSession = {
   id: string
@@ -13,18 +12,16 @@ type ChatSidebarSession = {
 
 type ChatSidebarProps = {
   isOpen: boolean
+  isMobile?: boolean
   isSessionsLoading: boolean
   groupedSessions: Record<string, ChatSidebarSession[]>
   activeSessionId: string | null
   avatarInitials: string
   avatarImageSrc: string | null
   profileName: string
-  profileFullName: string
-  profileNickname: string
   onToggleSidebar: () => void
   onOpenProfile: () => void
   onOpenSettings?: () => void
-  onProfileUpdated?: (profile: { fullName: string; nickname: string; avatarDataUrl: string | null }) => void
   onLogout: () => void
   onCreateNewChat: () => Promise<void>
   onOpenSession: (sessionId: string) => Promise<void>
@@ -34,16 +31,15 @@ type ChatSidebarProps = {
 
 function ChatSidebar({
   isOpen,
+  isMobile = false,
   isSessionsLoading,
   groupedSessions,
   activeSessionId,
   avatarInitials,
   avatarImageSrc,
   profileName,
-  profileFullName,
-  profileNickname,
   onToggleSidebar,
-  onProfileUpdated,
+  onOpenSettings,
   onLogout,
   onCreateNewChat,
   onOpenSession,
@@ -54,7 +50,6 @@ function ChatSidebar({
   const [editingDraft, setEditingDraft] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [showSearchInput, setShowSearchInput] = useState(false)
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -121,12 +116,15 @@ function ChatSidebar({
     setEditingDraft('')
   }
 
+  const isExpanded = isMobile ? true : isOpen
+
   return (
-    <>
     <aside
-      className={`group relative z-20 h-full shrink-0 overflow-hidden bg-[#F9FAFB] transition-[width,background-color] duration-300 dark:bg-[#212121] ${isOpen ? 'w-[260px]' : 'w-[68px] cursor-pointer'}`}
+      className={isMobile
+        ? 'group relative z-20 h-full w-[min(82vw,300px)] max-w-[300px] shrink-0 overflow-hidden border-r border-[#E5E5E5] bg-[#F9FAFB] dark:border-white/10 dark:bg-[#212121]'
+        : `group relative z-20 h-full shrink-0 overflow-hidden bg-[#F9FAFB] transition-[width,background-color] duration-300 dark:bg-[#212121] ${isOpen ? 'w-[260px]' : 'w-[68px] cursor-pointer'}`}
       onClick={(event) => {
-        if (isOpen) {
+        if (isMobile || isOpen) {
           return
         }
 
@@ -141,8 +139,8 @@ function ChatSidebar({
       }}
     >
       <div className="flex h-full flex-col overflow-hidden">
-        <div className={`flex h-14 shrink-0 items-center ${isOpen ? 'justify-between px-3' : 'justify-center px-0'}`}>
-          {isOpen ? (
+        <div className={`flex h-14 shrink-0 items-center ${isExpanded ? 'justify-between px-3' : 'justify-center px-0'}`}>
+          {isExpanded ? (
             <div className="flex h-8 w-8 items-center justify-center text-gray-800 dark:text-[#E5E7EB]">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -205,7 +203,7 @@ function ChatSidebar({
             </button>
           )}
 
-          {isOpen ? (
+          {isExpanded ? (
             <button
               type="button"
               className="ghost-icon-btn shrink-0 rounded-lg !bg-transparent p-1.5 text-gray-500 transition-colors hover:text-gray-900 focus:outline-none dark:text-gray-300 dark:hover:text-white"
@@ -238,30 +236,30 @@ function ChatSidebar({
           <button
             type="button"
             onClick={() => void onCreateNewChat()}
-            className={`flex w-full items-center rounded-lg bg-transparent px-3 py-2.5 text-gray-700 transition-colors dark:text-gray-200 ${isOpen ? 'gap-3 justify-start hover:bg-gray-200 dark:hover:bg-[#3a3a3a]' : 'justify-center px-0 hover:text-gray-900 dark:hover:text-white'}`}
+            className={`flex w-full items-center rounded-lg bg-transparent px-3 py-2.5 text-gray-700 transition-colors dark:text-gray-200 ${isExpanded ? 'gap-3 justify-start hover:bg-gray-200 dark:hover:bg-[#3a3a3a]' : 'justify-center px-0 hover:text-gray-900 dark:hover:text-white'}`}
           >
             <Plus className="size-[18px] shrink-0 text-inherit" />
-            <span className={`text-[14px] font-medium whitespace-nowrap ${isOpen ? '' : 'hidden'}`}>New chat</span>
+            <span className={`text-[14px] font-medium whitespace-nowrap ${isExpanded ? '' : 'hidden'}`}>New chat</span>
           </button>
 
           <button
             type="button"
             onClick={() => {
-              if (!isOpen) {
+              if (!isExpanded) {
                 onToggleSidebar()
                 return
               }
 
               setShowSearchInput((previous) => !previous)
             }}
-            className={`flex w-full items-center rounded-lg bg-transparent px-3 py-2 text-gray-700 transition-colors dark:text-gray-200 ${isOpen ? 'gap-3 justify-start hover:bg-gray-200 dark:hover:bg-[#3a3a3a]' : 'justify-center px-0 hover:text-gray-900 dark:hover:text-white'}`}
+            className={`flex w-full items-center rounded-lg bg-transparent px-3 py-2 text-gray-700 transition-colors dark:text-gray-200 ${isExpanded ? 'gap-3 justify-start hover:bg-gray-200 dark:hover:bg-[#3a3a3a]' : 'justify-center px-0 hover:text-gray-900 dark:hover:text-white'}`}
           >
             <Search className="size-[18px] shrink-0 text-inherit" />
-            <span className={`text-[14px] font-medium whitespace-nowrap ${isOpen ? '' : 'hidden'}`}>Search chats</span>
+            <span className={`text-[14px] font-medium whitespace-nowrap ${isExpanded ? '' : 'hidden'}`}>Search chats</span>
           </button>
         </div>
 
-        {isOpen && showSearchInput ? (
+        {isExpanded && showSearchInput ? (
           <div className="px-3 pb-2">
             <input
               ref={searchInputRef}
@@ -274,7 +272,7 @@ function ChatSidebar({
           </div>
         ) : null}
 
-        <div className={`flex-1 overflow-y-auto px-3 py-2 pb-6 ${isOpen ? '' : 'hidden'}`}>
+        <div className={`flex-1 overflow-y-auto px-3 py-2 pb-6 ${isExpanded ? '' : 'hidden'}`}>
           {isSessionsLoading ? (
             <p className="px-2 text-[13px] text-gray-500 dark:text-gray-400">Loading chats...</p>
           ) : filteredSessionCount === 0 ? (
@@ -377,7 +375,7 @@ function ChatSidebar({
           <Menu>
             <MenuTrigger
               aria-label="Open profile menu"
-              className={`flex w-full items-center rounded-lg bg-transparent py-2 transition-colors focus:outline-none data-[popup-open]:bg-transparent ${isOpen ? 'gap-2.5 justify-start px-2 hover:bg-gray-200 dark:hover:bg-[#3a3a3a]' : 'ghost-icon-btn justify-center px-0 hover:text-gray-900 dark:hover:text-white'}`}
+              className={`flex w-full items-center rounded-lg bg-transparent py-2 transition-colors focus:outline-none data-[popup-open]:bg-transparent ${isExpanded ? 'gap-2.5 justify-start px-2 hover:bg-gray-200 dark:hover:bg-[#3a3a3a]' : 'ghost-icon-btn justify-center px-0 hover:text-gray-900 dark:hover:text-white'}`}
             >
               <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-gray-200 text-[12px] font-bold text-gray-800 dark:bg-[#333333] dark:text-gray-200">
                 {avatarImageSrc ? (
@@ -386,7 +384,7 @@ function ChatSidebar({
                   avatarInitials
                 )}
               </div>
-              <span className={`truncate text-[14px] font-medium text-gray-900 dark:text-gray-100 ${isOpen ? '' : 'hidden'}`}>
+              <span className={`truncate text-[14px] font-medium text-gray-900 dark:text-gray-100 ${isExpanded ? '' : 'hidden'}`}>
                 {profileName}
               </span>
             </MenuTrigger>
@@ -398,7 +396,7 @@ function ChatSidebar({
               <MenuItem
                 className="cursor-pointer gap-2.5 rounded-[10px] px-3 py-2 text-[14px] text-gray-700 data-highlighted:bg-gray-50 data-highlighted:text-gray-700 dark:text-gray-200 dark:data-highlighted:bg-white/10 dark:data-highlighted:text-gray-100"
                 onClick={() => {
-                  setIsSettingsOpen(true)
+                  onOpenSettings?.()
                 }}
               >
                 <Settings className="size-4" />
@@ -418,15 +416,6 @@ function ChatSidebar({
         </div>
       </div>
     </aside>
-
-    <SettingsDialog
-      isOpen={isSettingsOpen}
-      onClose={() => setIsSettingsOpen(false)}
-      profileFullName={profileFullName}
-      profileNickname={profileNickname}
-      onProfileUpdated={onProfileUpdated}
-    />
-    </>
   )
 }
 
