@@ -149,6 +149,7 @@ const thinkingRevealDelayMs = 1200
 const mobileLayoutMediaQuery = '(max-width: 767px)'
 const attachmentTextContentLimit = 20_000
 const attachmentImageDataUrlLimit = 6_000_000
+const attachmentPreviewDataUrlLimit = 8_000_000
 const greetingNameToken = '{name}'
 const assistantImageMarkdownRegex =
   /!\[[^\]]*\]\((?:<(data:image\/[^>]+|https?:\/\/[^>]+)>|(data:image\/[^)\s]+|https?:\/\/[^)\s]+))\)/gi
@@ -391,6 +392,15 @@ function getAttachmentTypeLabel(attachment: ChatAttachment) {
     return 'PDF Document'
   }
 
+  if (
+    attachment.mimeType.includes('msword') ||
+    attachment.mimeType.includes('wordprocessingml') ||
+    attachment.name.toLowerCase().endsWith('.doc') ||
+    attachment.name.toLowerCase().endsWith('.docx')
+  ) {
+    return 'Word Document'
+  }
+
   if (attachment.mimeType.startsWith('image/')) {
     return 'Image'
   }
@@ -422,6 +432,19 @@ function getAttachmentVisual(attachment: ChatAttachment): AttachmentVisual {
       Icon: FileText,
       iconClassName: 'text-red-500 dark:text-red-300',
       containerClassName: 'bg-red-50 dark:bg-red-500/15',
+    }
+  }
+
+  if (
+    mimeType.includes('msword') ||
+    mimeType.includes('wordprocessingml') ||
+    extension === 'doc' ||
+    extension === 'docx'
+  ) {
+    return {
+      Icon: FileText,
+      iconClassName: 'text-blue-600 dark:text-blue-300',
+      containerClassName: 'bg-blue-50 dark:bg-blue-500/15',
     }
   }
 
@@ -563,6 +586,25 @@ function extractAssistantImageUrls(content: string) {
   }
 
   return urls
+}
+
+function shouldCacheAttachmentPreview(file: File) {
+  const mimeType = file.type.toLowerCase()
+  const lowerName = file.name.toLowerCase()
+
+  if (mimeType === 'application/pdf') {
+    return true
+  }
+
+  if (mimeType.startsWith('text/')) {
+    return true
+  }
+
+  if (mimeType.includes('html') || lowerName.endsWith('.html') || lowerName.endsWith('.htm')) {
+    return true
+  }
+
+  return false
 }
 
 function stripAssistantImageMarkdown(content: string) {
@@ -868,6 +910,7 @@ function ChatLanding() {
   const [renameDialogDraft, setRenameDialogDraft] = useState('')
   const [isRenameSaving, setIsRenameSaving] = useState(false)
   const [isClearDialogOpen, setIsClearDialogOpen] = useState(false)
+  const [activeAttachmentPreview, setActiveAttachmentPreview] = useState<ChatAttachment | null>(null)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [sessionIdPendingDelete, setSessionIdPendingDelete] = useState<string | null>(null)
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
@@ -887,6 +930,7 @@ function ChatLanding() {
   const thinkingTimeoutRef = useRef<number | null>(null)
   const assistantRequestAbortRef = useRef<AbortController | null>(null)
   const generationPollTimeoutRef = useRef<number | null>(null)
+  const attachmentPreviewDataUrlsRef = useRef<Record<string, string>>({})
   const activeGenerationIdRef = useRef<string | null>(null)
   const activeGenerationMessageIdRef = useRef<string | null>(null)
   const activeGenerationContentRef = useRef('')
@@ -2338,6 +2382,46 @@ function ChatLanding() {
     resetStream()
   }
 
+  function openAttachmentPreview(attachment: ChatAttachment) {
+    setActiveAttachmentPreview(attachment)
+  }
+
+  function closeAttachmentPreview() {
+    setActiveAttachmentPreview(null)
+  }
+
+  async function cacheAttachmentPreviewDataUrls(files: File[], attachments: ChatAttachment[]) {
+    const entries = await Promise.all(
+      attachments.map(async (attachment, index) => {
+        const sourceFile = files[index]
+        if (!sourceFile) {
+          return null
+        }
+
+        if (sourceFile.size > attachmentPreviewDataUrlLimit || !shouldCacheAttachmentPreview(sourceFile)) {
+          return null
+        }
+
+        try {
+          const dataUrl = await fileToDataUrl(sourceFile)
+          return [attachment.id, dataUrl] as const
+        } catch {
+          return null
+        }
+      }),
+    )
+
+    const nextEntries = entries.filter((entry): entry is readonly [string, string] => entry !== null)
+    if (nextEntries.length === 0) {
+      return
+    }
+
+    attachmentPreviewDataUrlsRef.current = {
+      ...attachmentPreviewDataUrlsRef.current,
+      ...Object.fromEntries(nextEntries),
+    }
+  }
+
   function handleDeleteActiveChat() {
     if (!activeSessionId) {
       setErrorMessage('No active chat to delete')
@@ -2598,6 +2682,9 @@ function ChatLanding() {
     resetStream()
 
     const parsedAttachments = await parseUploadedFiles(files)
+    if (parsedAttachments.length > 0 && files.length > 0) {
+      await cacheAttachmentPreviewDataUrls(files, parsedAttachments)
+    }
     const userMessage = createMessage('user', content, {
       ...(parsedAttachments.length > 0 ? { attachments: parsedAttachments } : {}),
     })
@@ -2776,29 +2863,42 @@ function ChatLanding() {
                   message.role === 'user' ? (
                     <div key={message.id} className="group relative flex w-full flex-col items-end">
                       <div className="flex w-full max-w-[80%] flex-col items-end gap-2.5">
-                        {(message.attachments ?? []).map((attachment) => (
-                          (() => {
-                            const visual = getAttachmentVisual(attachment)
-                            return (
-                              <div
-                                key={attachment.id}
-                                className="flex w-64 items-center gap-3.5 self-end rounded-2xl border border-[#E5E5E5] bg-white p-3 shadow-sm dark:border-white/10 dark:bg-[#2f2f2f]"
-                              >
-                                <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${visual.containerClassName}`}>
-                                  <visual.Icon className={`size-5 ${visual.iconClassName}`} aria-hidden />
-                                </div>
-                                <div className="min-w-0 overflow-hidden">
-                                  <p className="truncate text-[14px] font-semibold text-gray-800 dark:text-gray-100">
-                                    {attachment.name}
-                                  </p>
-                                  <p className="truncate text-[12px] text-gray-500 dark:text-gray-400">
-                                    {getAttachmentTypeLabel(attachment)} • {formatFileSize(attachment.size)}
-                                  </p>
-                                </div>
-                              </div>
-                            )
-                          })()
-                        ))}
+                        {(message.attachments ?? []).length > 0 ? (
+                          <div className="w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                            <div className="ml-auto flex w-max max-w-full items-center gap-2">
+                              {(message.attachments ?? []).map((attachment) => {
+                                const visual = getAttachmentVisual(attachment)
+                                return (
+                                  <div
+                                    key={attachment.id}
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={() => openAttachmentPreview(attachment)}
+                                    onKeyDown={(event) => {
+                                      if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault()
+                                        openAttachmentPreview(attachment)
+                                      }
+                                    }}
+                                    className="flex w-[min(100%,22rem)] cursor-pointer items-center gap-2 rounded-xl border border-[#E5E5E5] bg-white px-2.5 py-2 shadow-sm transition-colors hover:bg-gray-50 dark:border-white/10 dark:bg-[#2f2f2f] dark:hover:bg-[#343434]"
+                                  >
+                                    <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${visual.containerClassName}`}>
+                                      <visual.Icon className={`size-3.5 ${visual.iconClassName}`} aria-hidden />
+                                    </div>
+                                    <div className="min-w-0 flex-1 overflow-hidden">
+                                      <p className="truncate text-[12px] font-medium text-gray-800 dark:text-gray-100">
+                                        {attachment.name}
+                                        <span className="ml-1 text-[11px] font-normal text-gray-500 dark:text-gray-400">
+                                          • {getAttachmentTypeLabel(attachment)} • {formatFileSize(attachment.size)}
+                                        </span>
+                                      </p>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        ) : null}
 
                         <div className="lovechat-accent-soft-static rounded-[20px] rounded-tr-[4px] px-5 py-3.5 text-[15px] leading-relaxed shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
                         {editingMessageId === message.id ? (
@@ -3162,6 +3262,85 @@ function ChatLanding() {
               >
                 Clear
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {activeAttachmentPreview ? (
+        <div
+          className="fixed inset-0 z-[56] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+          onClick={closeAttachmentPreview}
+        >
+          <div
+            className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-[20px] border border-[#E5E5E5] bg-white shadow-xl dark:border-white/10 dark:bg-[#2f2f2f]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[#E5E5E5] px-4 py-3 dark:border-white/10">
+              <div className="min-w-0">
+                <h3 className="truncate text-[15px] font-semibold text-gray-900 dark:text-gray-100">
+                  {activeAttachmentPreview.name}
+                </h3>
+                <p className="text-[12px] text-gray-500 dark:text-gray-400">
+                  {getAttachmentTypeLabel(activeAttachmentPreview)} • {formatFileSize(activeAttachmentPreview.size)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeAttachmentPreview}
+                className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-white/10 dark:hover:text-gray-200"
+                aria-label="Close file preview"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="min-h-[300px] flex-1 overflow-auto bg-[#F9FAFB] p-5 dark:bg-[#202020]">
+              {(() => {
+                const previewDataUrl = attachmentPreviewDataUrlsRef.current[activeAttachmentPreview.id]
+                const isPdfPreview = activeAttachmentPreview.mimeType === 'application/pdf'
+                const isTextLikePreview =
+                  activeAttachmentPreview.mimeType.startsWith('text/') ||
+                  activeAttachmentPreview.mimeType.includes('html')
+
+                if (activeAttachmentPreview.imageDataUrl) {
+                  return (
+                    <img
+                      src={activeAttachmentPreview.imageDataUrl}
+                      alt={activeAttachmentPreview.name}
+                      className="mx-auto max-h-[72vh] max-w-full rounded-lg object-contain shadow-sm"
+                    />
+                  )
+                }
+
+                if (previewDataUrl && (isPdfPreview || isTextLikePreview)) {
+                  return (
+                    <iframe
+                      title={activeAttachmentPreview.name}
+                      src={previewDataUrl}
+                      className="h-[72vh] w-full rounded-xl border border-[#E5E5E5] bg-white shadow-sm dark:border-white/10 dark:bg-[#242424]"
+                    />
+                  )
+                }
+
+                if (activeAttachmentPreview.textContent) {
+                  return (
+                    <pre className="h-full min-h-[300px] overflow-auto rounded-xl border border-[#E5E5E5] bg-white p-4 text-[13px] leading-relaxed text-gray-700 whitespace-pre-wrap dark:border-white/10 dark:bg-[#242424] dark:text-gray-200">
+                      {activeAttachmentPreview.textContent}
+                    </pre>
+                  )
+                }
+
+                return (
+                  <div className="flex h-full min-h-[300px] flex-col items-center justify-center gap-3 text-[#6B7280] dark:text-gray-400">
+                    <FileText className="size-10" strokeWidth={1.6} aria-hidden />
+                    <p className="text-[14px]">Preview is not available for this file.</p>
+                  </div>
+                )
+              })()}
             </div>
           </div>
         </div>

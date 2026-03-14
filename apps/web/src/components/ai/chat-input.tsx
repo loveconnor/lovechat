@@ -109,6 +109,15 @@ function getUploadFileVisual(file: File): UploadFileVisual {
   }
 
   if (
+    mimeType.includes('msword') ||
+    mimeType.includes('wordprocessingml') ||
+    extension === 'doc' ||
+    extension === 'docx'
+  ) {
+    return { Icon: FileText, iconClassName: 'text-blue-600 dark:text-blue-300' }
+  }
+
+  if (
     mimeType.startsWith('text/html') ||
     extension === 'html' ||
     extension === 'htm' ||
