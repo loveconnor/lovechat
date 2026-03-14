@@ -1,4 +1,17 @@
-import { FileText, Globe, Plus, Square, X, Check } from 'lucide-react'
+import {
+  Check,
+  FileArchive,
+  FileAudio,
+  FileCode2,
+  FileImage,
+  FileSpreadsheet,
+  FileText,
+  FileVideo,
+  Globe,
+  Plus,
+  Square,
+  X,
+} from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { ModelSelector } from '#/components/ai/model-selector'
 
@@ -75,6 +88,77 @@ function isPdfFile(file: File) {
 
 function isTextFile(file: File) {
   return file.type.startsWith('text/')
+}
+
+function getFileExtension(fileName: string) {
+  const segments = fileName.toLowerCase().split('.')
+  return segments.length > 1 ? segments.pop() ?? '' : ''
+}
+
+type UploadFileVisual = {
+  Icon: React.ComponentType<{ className?: string; strokeWidth?: number; 'aria-hidden'?: boolean }>
+  iconClassName: string
+}
+
+function getUploadFileVisual(file: File): UploadFileVisual {
+  const mimeType = file.type.toLowerCase()
+  const extension = getFileExtension(file.name)
+
+  if (mimeType === 'application/pdf' || extension === 'pdf') {
+    return { Icon: FileText, iconClassName: 'text-red-500 dark:text-red-300' }
+  }
+
+  if (
+    mimeType.startsWith('text/html') ||
+    extension === 'html' ||
+    extension === 'htm' ||
+    extension === 'xml' ||
+    extension === 'css' ||
+    extension === 'js' ||
+    extension === 'ts' ||
+    extension === 'tsx' ||
+    extension === 'jsx' ||
+    extension === 'json' ||
+    extension === 'md'
+  ) {
+    return { Icon: FileCode2, iconClassName: 'text-blue-500 dark:text-blue-300' }
+  }
+
+  if (mimeType.startsWith('image/')) {
+    return { Icon: FileImage, iconClassName: 'text-emerald-500 dark:text-emerald-300' }
+  }
+
+  if (mimeType.startsWith('audio/')) {
+    return { Icon: FileAudio, iconClassName: 'text-fuchsia-500 dark:text-fuchsia-300' }
+  }
+
+  if (mimeType.startsWith('video/')) {
+    return { Icon: FileVideo, iconClassName: 'text-violet-500 dark:text-violet-300' }
+  }
+
+  if (
+    mimeType.includes('spreadsheet') ||
+    mimeType.includes('excel') ||
+    extension === 'csv' ||
+    extension === 'xls' ||
+    extension === 'xlsx'
+  ) {
+    return { Icon: FileSpreadsheet, iconClassName: 'text-green-600 dark:text-green-300' }
+  }
+
+  if (
+    mimeType.includes('zip') ||
+    mimeType.includes('compressed') ||
+    extension === 'zip' ||
+    extension === 'rar' ||
+    extension === '7z' ||
+    extension === 'tar' ||
+    extension === 'gz'
+  ) {
+    return { Icon: FileArchive, iconClassName: 'text-amber-500 dark:text-amber-300' }
+  }
+
+  return { Icon: FileText, iconClassName: 'text-gray-500 dark:text-gray-400' }
 }
 
 function ChatInput({
@@ -274,6 +358,7 @@ function ChatInput({
     }
 
     const file = activePreviewFile.file
+    const previewVisual = getUploadFileVisual(file)
 
     if (isImageFile(file) && previewUrl) {
       return (
@@ -309,7 +394,7 @@ function ChatInput({
 
     return (
       <div className="flex flex-col items-center justify-center gap-3 text-[#6B7280] dark:text-gray-400">
-        <FileText className="size-12" strokeWidth={1.5} aria-hidden="true" />
+        <previewVisual.Icon className={`size-12 ${previewVisual.iconClassName}`} strokeWidth={1.5} aria-hidden />
         <p className="text-[14px]">Preview is not available for this file type.</p>
       </div>
     )
@@ -323,13 +408,16 @@ function ChatInput({
             className={`w-full gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${uploadedFiles.length === 0 ? 'hidden' : 'flex'}`}
           >
             {uploadedFiles.map((item) => (
+              (() => {
+                const visual = getUploadFileVisual(item.file)
+                return (
               <div
                 key={item.id}
                 onClick={() => handleOpenPreview(item)}
                 className="flex max-w-[200px] shrink-0 cursor-pointer items-center gap-2 rounded-[10px] border border-[#E5E5E5] bg-white px-3 py-2 text-[13px] text-gray-700 shadow-sm transition-colors hover:bg-gray-50 dark:border-white/10 dark:bg-[#242424] dark:text-gray-200 dark:hover:bg-white/10"
               >
-                <div className="shrink-0 text-gray-500 dark:text-gray-400">
-                  <FileText className="size-3.5" aria-hidden="true" />
+                <div className={`shrink-0 ${visual.iconClassName}`}>
+                  <visual.Icon className="size-3.5" aria-hidden />
                 </div>
                 <span className="truncate font-medium">{item.file.name}</span>
                 <button
@@ -344,6 +432,8 @@ function ChatInput({
                   <X className="size-3.5" />
                 </button>
               </div>
+                )
+              })()
             ))}
           </div>
 
@@ -552,7 +642,10 @@ function ChatInput({
             <div className="flex items-center justify-between border-b border-[#E5E5E5] p-4 dark:border-white/10">
               <div className="flex min-w-0 items-center gap-3 overflow-hidden">
                 <div className="shrink-0 text-gray-500 dark:text-gray-400">
-                  <FileText className="size-[18px]" aria-hidden="true" />
+                  {(() => {
+                    const visual = getUploadFileVisual(activePreviewFile.file)
+                    return <visual.Icon className={`size-[18px] ${visual.iconClassName}`} aria-hidden />
+                  })()}
                 </div>
                 <h3 className="truncate text-[15px] font-medium text-gray-800 dark:text-gray-100">{activePreviewFile.file.name}</h3>
               </div>

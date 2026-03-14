@@ -1,5 +1,18 @@
 import { useNavigate } from '@tanstack/react-router'
-import { Check, Copy, FileText, Pencil, RotateCcw } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  Copy,
+  FileArchive,
+  FileAudio,
+  FileCode2,
+  FileImage,
+  FileSpreadsheet,
+  FileText,
+  FileVideo,
+  Pencil,
+  RotateCcw,
+} from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CitationList } from '#/components/ai/citation'
 import { ChatHeader } from '#/components/ai/chat-header'
@@ -389,6 +402,110 @@ function getAttachmentTypeLabel(attachment: ChatAttachment) {
   return 'File'
 }
 
+function getAttachmentExtension(fileName: string) {
+  const segments = fileName.toLowerCase().split('.')
+  return segments.length > 1 ? segments.pop() ?? '' : ''
+}
+
+type AttachmentVisual = {
+  Icon: React.ComponentType<{ className?: string; strokeWidth?: number; 'aria-hidden'?: boolean }>
+  iconClassName: string
+  containerClassName: string
+}
+
+function getAttachmentVisual(attachment: ChatAttachment): AttachmentVisual {
+  const mimeType = attachment.mimeType.toLowerCase()
+  const extension = getAttachmentExtension(attachment.name)
+
+  if (mimeType === 'application/pdf' || extension === 'pdf') {
+    return {
+      Icon: FileText,
+      iconClassName: 'text-red-500 dark:text-red-300',
+      containerClassName: 'bg-red-50 dark:bg-red-500/15',
+    }
+  }
+
+  if (
+    mimeType.startsWith('text/html') ||
+    extension === 'html' ||
+    extension === 'htm' ||
+    extension === 'xml' ||
+    extension === 'css' ||
+    extension === 'js' ||
+    extension === 'ts' ||
+    extension === 'tsx' ||
+    extension === 'jsx' ||
+    extension === 'json' ||
+    extension === 'md'
+  ) {
+    return {
+      Icon: FileCode2,
+      iconClassName: 'text-blue-500 dark:text-blue-300',
+      containerClassName: 'bg-blue-50 dark:bg-blue-500/15',
+    }
+  }
+
+  if (mimeType.startsWith('image/')) {
+    return {
+      Icon: FileImage,
+      iconClassName: 'text-emerald-500 dark:text-emerald-300',
+      containerClassName: 'bg-emerald-50 dark:bg-emerald-500/15',
+    }
+  }
+
+  if (mimeType.startsWith('audio/')) {
+    return {
+      Icon: FileAudio,
+      iconClassName: 'text-fuchsia-500 dark:text-fuchsia-300',
+      containerClassName: 'bg-fuchsia-50 dark:bg-fuchsia-500/15',
+    }
+  }
+
+  if (mimeType.startsWith('video/')) {
+    return {
+      Icon: FileVideo,
+      iconClassName: 'text-violet-500 dark:text-violet-300',
+      containerClassName: 'bg-violet-50 dark:bg-violet-500/15',
+    }
+  }
+
+  if (
+    mimeType.includes('spreadsheet') ||
+    mimeType.includes('excel') ||
+    extension === 'csv' ||
+    extension === 'xls' ||
+    extension === 'xlsx'
+  ) {
+    return {
+      Icon: FileSpreadsheet,
+      iconClassName: 'text-green-600 dark:text-green-300',
+      containerClassName: 'bg-green-50 dark:bg-green-500/15',
+    }
+  }
+
+  if (
+    mimeType.includes('zip') ||
+    mimeType.includes('compressed') ||
+    extension === 'zip' ||
+    extension === 'rar' ||
+    extension === '7z' ||
+    extension === 'tar' ||
+    extension === 'gz'
+  ) {
+    return {
+      Icon: FileArchive,
+      iconClassName: 'text-amber-500 dark:text-amber-300',
+      containerClassName: 'bg-amber-50 dark:bg-amber-500/15',
+    }
+  }
+
+  return {
+    Icon: FileText,
+    iconClassName: 'text-gray-500 dark:text-gray-300',
+    containerClassName: 'bg-gray-100 dark:bg-white/10',
+  }
+}
+
 function slugifyFilename(value: string, fallback: string) {
   const normalized = value
     .toLowerCase()
@@ -763,6 +880,7 @@ function ChatLanding() {
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
   const [landingGreeting, setLandingGreeting] = useState<LandingGreeting>(initialLandingGreeting)
   const [showAllMobileSuggestions, setShowAllMobileSuggestions] = useState(false)
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const messageListRef = useRef<HTMLDivElement | null>(null)
   const renameInputRef = useRef<HTMLInputElement | null>(null)
   const copyTimeoutRef = useRef<number | null>(null)
@@ -826,6 +944,34 @@ function ChatLanding() {
     const activeStreamingMessage = messages.find((message) => message.id === streamingMessageId)
     return activeStreamingMessage?.content ?? ''
   }, [messages, streamingMessageId])
+
+  function updateScrollToBottomVisibility(container: HTMLDivElement) {
+    const remainingScroll = container.scrollHeight - container.scrollTop - container.clientHeight
+    setShowScrollToBottom(remainingScroll > 80)
+  }
+
+  function handleMessageListScroll() {
+    const container = messageListRef.current
+    if (!container) {
+      return
+    }
+
+    updateScrollToBottomVisibility(container)
+  }
+
+  function handleScrollToBottom() {
+    const container = messageListRef.current
+    if (!container) {
+      return
+    }
+
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: 'smooth',
+    })
+
+    setShowScrollToBottom(false)
+  }
 
   useEffect(() => {
     setLandingGreeting((previous) => pickLandingGreeting(previous))
@@ -1631,6 +1777,7 @@ function ChatLanding() {
 
   useEffect(() => {
     if (messages.length === 0) {
+      setShowScrollToBottom(false)
       return
     }
 
@@ -1640,6 +1787,7 @@ function ChatLanding() {
     }
 
     container.scrollTop = container.scrollHeight
+    updateScrollToBottomVisibility(container)
   }, [messages, isLoading])
 
   useEffect(() => {
@@ -2546,7 +2694,7 @@ function ChatLanding() {
           onDeleteChat={handleDeleteActiveChat}
         />
 
-        <section className="flex min-h-0 flex-1 flex-col px-3 pt-16 pb-3 sm:px-4 sm:pb-4">
+        <section className="relative flex min-h-0 flex-1 flex-col px-3 pt-16 pb-3 sm:px-4 sm:pb-4">
         <div className={`flex min-h-0 w-full flex-1 flex-col ${messages.length === 0 ? 'justify-center' : ''}`}>
           {messages.length === 0 ? (
             <div className="mx-auto w-full max-w-3xl">
@@ -2620,7 +2768,8 @@ function ChatLanding() {
           ) : (
             <div
               ref={messageListRef}
-              className="min-h-0 flex-1 overflow-y-auto pb-16 [&::-webkit-scrollbar-thumb]:rounded-[10px] [&::-webkit-scrollbar-thumb]:bg-[#E5E7EB] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1.5"
+              onScroll={handleMessageListScroll}
+              className="min-h-0 flex-1 overflow-y-auto pb-44 [&::-webkit-scrollbar-thumb]:rounded-[10px] [&::-webkit-scrollbar-thumb]:bg-[#E5E7EB] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1.5"
             >
               <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-start gap-8 pt-8 pb-4">
                 {messages.map((message) =>
@@ -2628,22 +2777,27 @@ function ChatLanding() {
                     <div key={message.id} className="group relative flex w-full flex-col items-end">
                       <div className="flex w-full max-w-[80%] flex-col items-end gap-2.5">
                         {(message.attachments ?? []).map((attachment) => (
-                          <div
-                            key={attachment.id}
-                            className="flex w-64 items-center gap-3.5 self-end rounded-2xl border border-[#E5E5E5] bg-white p-3 shadow-sm dark:border-white/10 dark:bg-[#2f2f2f]"
-                          >
-                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-red-50 text-red-500 dark:bg-red-500/15 dark:text-red-300">
-                              <FileText className="size-5" aria-hidden="true" />
-                            </div>
-                            <div className="min-w-0 overflow-hidden">
-                              <p className="truncate text-[14px] font-semibold text-gray-800 dark:text-gray-100">
-                                {attachment.name}
-                              </p>
-                              <p className="truncate text-[12px] text-gray-500 dark:text-gray-400">
-                                {getAttachmentTypeLabel(attachment)} • {formatFileSize(attachment.size)}
-                              </p>
-                            </div>
-                          </div>
+                          (() => {
+                            const visual = getAttachmentVisual(attachment)
+                            return (
+                              <div
+                                key={attachment.id}
+                                className="flex w-64 items-center gap-3.5 self-end rounded-2xl border border-[#E5E5E5] bg-white p-3 shadow-sm dark:border-white/10 dark:bg-[#2f2f2f]"
+                              >
+                                <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${visual.containerClassName}`}>
+                                  <visual.Icon className={`size-5 ${visual.iconClassName}`} aria-hidden />
+                                </div>
+                                <div className="min-w-0 overflow-hidden">
+                                  <p className="truncate text-[14px] font-semibold text-gray-800 dark:text-gray-100">
+                                    {attachment.name}
+                                  </p>
+                                  <p className="truncate text-[12px] text-gray-500 dark:text-gray-400">
+                                    {getAttachmentTypeLabel(attachment)} • {formatFileSize(attachment.size)}
+                                  </p>
+                                </div>
+                              </div>
+                            )
+                          })()
                         ))}
 
                         <div className="lovechat-accent-soft-static rounded-[20px] rounded-tr-[4px] px-5 py-3.5 text-[15px] leading-relaxed shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
@@ -2840,21 +2994,37 @@ function ChatLanding() {
           ) : null}
 
           {messages.length > 0 ? (
-            <div className="sticky bottom-0 z-30 pb-1 pt-2">
-              <div className="mx-auto w-full max-w-3xl">
-                <ChatInput
-                  prompt={prompt}
-                  onPromptChange={setPrompt}
-                  onSubmit={(files) => void submitPrompt(undefined, files)}
-                  onStop={handleStopAssistantResponse}
-                  isLoading={isLoading}
-                  selectedModel={selectedModel}
-                  onModelChange={setSelectedModel}
-                  webSearchActive={webSearchActive}
-                  onWebSearchChange={setWebSearchActive}
-                  learningModeActive={learningModeActive}
-                  onLearningModeChange={setLearningModeActive}
-                />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 pb-1 pt-2">
+              {showScrollToBottom ? (
+                <div className="mb-2 flex justify-center px-2">
+                  <button
+                    type="button"
+                    onClick={handleScrollToBottom}
+                    className="lovechat-accent-button pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full p-0 shadow-md transition-all hover:opacity-90"
+                    aria-label="Scroll to latest message"
+                    title="Jump to bottom"
+                  >
+                    <ChevronDown className="size-3.5" />
+                  </button>
+                </div>
+              ) : null}
+
+              <div className="pb-1 pt-2">
+                <div className="pointer-events-auto mx-auto w-full max-w-3xl">
+                  <ChatInput
+                    prompt={prompt}
+                    onPromptChange={setPrompt}
+                    onSubmit={(files) => void submitPrompt(undefined, files)}
+                    onStop={handleStopAssistantResponse}
+                    isLoading={isLoading}
+                    selectedModel={selectedModel}
+                    onModelChange={setSelectedModel}
+                    webSearchActive={webSearchActive}
+                    onWebSearchChange={setWebSearchActive}
+                    learningModeActive={learningModeActive}
+                    onLearningModeChange={setLearningModeActive}
+                  />
+                </div>
               </div>
             </div>
           ) : null}

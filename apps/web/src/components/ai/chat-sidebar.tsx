@@ -1,6 +1,7 @@
-import { Ellipsis, Loader2, LogOut, Pencil, Plus, Search, Settings, Trash2 } from 'lucide-react'
+import { Ellipsis, Loader2, LogOut, MessageCircle, Pencil, Plus, Search, Settings, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '#/components/ui/menu'
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '#/components/ui/empty'
 
 type ChatSidebarSession = {
   id: string
@@ -276,7 +277,19 @@ function ChatSidebar({
           {isSessionsLoading ? (
             <p className="px-2 text-[13px] text-gray-500 dark:text-gray-400">Loading chats...</p>
           ) : filteredSessionCount === 0 ? (
-            <p className="px-2 text-[13px] text-gray-500 dark:text-gray-400">No chats yet. Start one with New chat.</p>
+            <Empty className="min-h-[220px] justify-center gap-4 rounded-xl border-none p-4 md:p-6">
+              <EmptyHeader className="max-w-[220px]">
+                <EmptyMedia variant="icon" className="mb-4">
+                  {searchQuery.trim() ? <Search className="size-4" /> : <MessageCircle className="size-4" />}
+                </EmptyMedia>
+                <EmptyTitle className="text-[15px] font-semibold text-gray-800 dark:text-gray-100">
+                  {searchQuery.trim() ? 'No matching chats' : 'No chats yet'}
+                </EmptyTitle>
+                <EmptyDescription className="text-[13px] text-gray-500 dark:text-gray-400">
+                  {searchQuery.trim() ? 'Try another search term.' : 'Create a new chat to get started.'}
+                </EmptyDescription>
+              </EmptyHeader>
+            </Empty>
           ) : (
             ['Today', 'Previous 7 Days', 'Older'].map((bucket) => {
               const bucketSessions = filteredGroupedSessions[bucket] ?? []

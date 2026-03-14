@@ -1,10 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '#/components/ui/button'
+import {
+  DEFAULT_OLLAMA_URL,
+  createDefaultModelSettings,
+  fetchOllamaModels,
+  getAllConfiguredProviders,
+  loadModelSettings,
+  saveModelSettings,
+  type ModelSettings,
+} from '#/components/ai/model-settings'
 import { Input } from '#/components/ui/input'
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from '#/components/ui/select'
 import { Switch } from '#/components/ui/switch'
 
-type SettingsTab = 'general' | 'personalization' | 'data'
+type SettingsTab = 'general' | 'personalization' | 'data' | 'models'
 type ThemeMode = 'light' | 'dark' | 'auto'
 type AccentColor = 'default' | 'blue' | 'violet' | 'pink' | 'rose' | 'green' | 'orange'
 type BaseStyleTone = 'default' | 'professional' | 'friendly' | 'candid' | 'quirky' | 'efficient' | 'nerdy' | 'cynical'
@@ -46,6 +55,7 @@ const TAB_LABELS: Record<SettingsTab, string> = {
   general: 'General',
   personalization: 'Personalization',
   data: 'Data Controls',
+  models: 'Models',
 }
 
 const TAB_ICONS: Record<SettingsTab, React.ReactNode> = {
@@ -66,9 +76,16 @@ const TAB_ICONS: Record<SettingsTab, React.ReactNode> = {
       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
     </svg>
   ),
+  models: (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="12 2 2 7 12 12 22 7 12 2" />
+      <polyline points="2 17 12 22 22 17" />
+      <polyline points="2 12 12 17 22 12" />
+    </svg>
+  ),
 }
 
-const TABS: SettingsTab[] = ['general', 'personalization', 'data']
+const TABS: SettingsTab[] = ['general', 'personalization', 'data', 'models']
 
 const ACCENT_COLORS = [
   {
@@ -227,9 +244,14 @@ function SettingsDialog({
   const [isDeleteAccountDialogOpen, setIsDeleteAccountDialogOpen] = useState(false)
   const [dataError, setDataError] = useState<string | null>(null)
   const [dataMessage, setDataMessage] = useState<string | null>(null)
+  const [modelSettings, setModelSettings] = useState<ModelSettings>(createDefaultModelSettings)
+  const [isFetchingOllamaModels, setIsFetchingOllamaModels] = useState(false)
+  const [modelError, setModelError] = useState<string | null>(null)
+  const [modelMessage, setModelMessage] = useState<string | null>(null)
   const avatarInputRef = useRef<HTMLInputElement>(null)
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme)
   const [accentColor, setAccentColor] = useState<AccentColor>(getInitialAccentColor)
+  const configuredProviders = useMemo(() => getAllConfiguredProviders(modelSettings), [modelSettings])
 
   useEffect(() => {
     if (!isOpen) {
@@ -258,6 +280,9 @@ function SettingsDialog({
     setSaveMessage(null)
     setTheme(getInitialTheme())
     setAccentColor(getInitialAccentColor())
+    setModelSettings(loadModelSettings())
+    setModelError(null)
+    setModelMessage(null)
 
     const sessionToken = window.localStorage.getItem('lovechat_session_token')
     if (!sessionToken) {
@@ -434,6 +459,84 @@ function SettingsDialog({
   function handleAccentColorChange(value: AccentColor) {
     setAccentColor(value)
     applyAccentColor(value)
+  }
+
+  function updateModelSettings(nextSettings: ModelSettings) {
+    setModelSettings(nextSettings)
+    saveModelSettings(nextSettings)
+  }
+
+  function handleModelVisibilityChange(modelKey: string, isVisible: boolean) {
+    updateModelSettings({
+      ...modelSettings,
+      visibility: {
+        ...modelSettings.visibility,
+        [modelKey]: isVisible,
+      },
+    })
+    setModelError(null)
+    setModelMessage('Model visibility updated.')
+  }
+
+  function handleOllamaEnabledChange(enabled: boolean) {
+    updateModelSettings({
+      ...modelSettings,
+      ollama: {
+        ...modelSettings.ollama,
+        enabled,
+      },
+    })
+    setModelError(null)
+    setModelMessage(enabled ? 'Local models enabled.' : 'Local models disabled.')
+  }
+
+  function handleOllamaUrlChange(url: string) {
+    updateModelSettings({
+      ...modelSettings,
+      ollama: {
+        ...modelSettings.ollama,
+        url,
+      },
+    })
+    setModelError(null)
+    setModelMessage(null)
+  }
+
+  async function handleFetchOllamaModels() {
+    const ollamaUrl = modelSettings.ollama.url.trim() || DEFAULT_OLLAMA_URL
+    setIsFetchingOllamaModels(true)
+    setModelError(null)
+    setModelMessage(null)
+
+    try {
+      const models = await fetchOllamaModels(ollamaUrl)
+
+      const nextVisibility = { ...modelSettings.visibility }
+      for (const model of models) {
+        if (nextVisibility[model.key] === undefined) {
+          nextVisibility[model.key] = true
+        }
+      }
+
+      updateModelSettings({
+        ...modelSettings,
+        visibility: nextVisibility,
+        ollama: {
+          ...modelSettings.ollama,
+          enabled: true,
+          url: ollamaUrl,
+          models,
+          lastSyncedAt: Date.now(),
+        },
+      })
+
+      setModelMessage(models.length === 0 ? 'Connected to Ollama, but no models were found.' : `Fetched ${models.length} local model${models.length === 1 ? '' : 's'} from Ollama.`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to connect to Ollama.'
+      setModelError(message)
+    } finally {
+      setIsFetchingOllamaModels(false)
+    }
   }
 
   async function handleChatHistoryToggle(nextValue: boolean) {
@@ -1197,6 +1300,164 @@ function SettingsDialog({
                 ) : null}
                 {dataMessage ? (
                   <p className="text-right text-[12px] text-emerald-600 dark:text-emerald-400">{dataMessage}</p>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {activeTab === 'models' ? (
+            <div>
+              <h3 className="mb-6 border-b border-[#E5E5E5] pb-3 text-[22px] font-bold text-gray-900 dark:border-gray-700 dark:text-white md:mb-8 md:pb-4">
+                Models
+              </h3>
+
+              <div className="flex flex-col gap-8">
+                <section>
+                  <div className="mb-1 text-[15px] font-semibold text-gray-900 dark:text-gray-100">Model Visibility</div>
+                  <p className="mb-4 text-[13px] leading-relaxed text-gray-500 dark:text-gray-400">
+                    Choose which models appear in your model picker.
+                  </p>
+
+                  <div className="flex flex-col gap-6">
+                    {configuredProviders.map((provider) => (
+                      <div key={provider.key}>
+                        <div className="mb-3 flex items-center gap-2 text-[11px] font-bold text-gray-400 uppercase dark:text-gray-500">
+                          {provider.key === 'openai' ? (
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              width="14"
+                              height="14"
+                              viewBox="0 0 640 640"
+                              fill="currentColor"
+                              className="shrink-0 text-gray-500 dark:text-gray-400"
+                              aria-hidden="true"
+                            >
+                              <path d="M260.4 249.8L260.4 201.2C260.4 197.1 261.9 194 265.5 192L363.3 135.7C376.6 128 392.5 124.4 408.9 124.4C470.3 124.4 509.3 172 509.3 222.7C509.3 226.3 509.3 230.4 508.8 234.5L407.3 175.1C401.2 171.5 395 171.5 388.9 175.1L260.4 249.8zM488.7 439.2L488.7 323C488.7 315.8 485.6 310.7 479.5 307.1L351 232.4L393 208.3C396.6 206.3 399.7 206.3 403.2 208.3L501 264.7C529.2 281.1 548.1 315.9 548.1 349.7C548.1 388.6 525.1 424.5 488.7 439.3L488.7 439.3zM230.2 336.8L188.2 312.2C184.6 310.2 183.1 307.1 183.1 303L183.1 190.4C183.1 135.6 225.1 94.1 281.9 94.1C303.4 94.1 323.4 101.3 340.3 114.1L239.4 172.5C233.3 176.1 230.2 181.2 230.2 188.4L230.2 336.9L230.2 336.9zM320.6 389L260.4 355.2L260.4 283.5L320.6 249.7L380.8 283.5L380.8 355.2L320.6 389zM359.3 544.7C337.8 544.7 317.8 537.5 300.9 524.7L401.8 466.3C407.9 462.7 411 457.6 411 450.4L411 301.9L453.5 326.5C457.1 328.5 458.6 331.6 458.6 335.7L458.6 448.3C458.6 503.1 416.1 544.6 359.3 544.6L359.3 544.6zM237.8 430.5L140.1 374.2C111.9 357.8 93 323 93 289.2C93 249.8 116.6 214.4 152.9 199.6L152.9 316.3C152.9 323.5 156 328.6 162.1 332.2L290.1 406.4L248.1 430.5C244.5 432.5 241.4 432.5 237.9 430.5zM232.2 514.5C174.3 514.5 131.8 471 131.8 417.2C131.8 413.1 132.3 409 132.8 404.9L233.7 463.3C239.8 466.9 246 466.9 252.1 463.3L380.6 389.1L380.6 437.7C380.6 441.8 379.1 444.9 375.5 446.9L277.7 503.2C264.4 510.9 248.5 514.5 232.1 514.5L232.1 514.5zM359.2 575.4C421.2 575.4 472.9 531.4 484.6 473C541.9 458.1 578.8 404.4 578.8 349.6C578.8 313.8 563.4 278.9 535.8 253.9C538.4 243.1 539.9 232.4 539.9 221.6C539.9 148.4 480.5 93.6 411.9 93.6C398.1 93.6 384.8 95.6 371.5 100.3C348.5 77.8 316.7 63.4 281.9 63.4C219.9 63.4 168.2 107.4 156.5 165.8C99.2 180.6 62.3 234.4 62.3 289.2C62.3 325 77.7 359.9 105.3 384.9C102.7 395.7 101.2 406.4 101.2 417.2C101.2 490.4 160.6 545.2 229.2 545.2C243 545.2 256.3 543.2 269.6 538.5C292.6 561 324.4 575.4 359.2 575.4z" />
+                            </svg>
+                          ) : null}
+                          {provider.key === 'ollama' ? (
+                            <svg
+                              fill="none"
+                              xmlns="http://www.w3.org/2000/svg"
+                              width="14"
+                              height="14"
+                              viewBox="0 0 512 512"
+                              className="shrink-0 text-gray-500 dark:text-gray-400"
+                              aria-hidden="true"
+                            >
+                              <path
+                                fillRule="evenodd"
+                                clipRule="evenodd"
+                                d="M168.64 23.253c4.608 1.814 8.768 4.8 12.544 8.747 6.293 6.528 11.605 15.872 15.659 26.944 4.074 11.136 6.72 23.467 7.722 35.84a107.824 107.824 0 0143.712-13.568l1.088-.085c18.56-1.494 36.907 1.856 52.907 10.112a103.091 103.091 0 016.336 3.626c1.067-12.138 3.669-24.192 7.68-35.072 4.053-11.093 9.365-20.416 15.637-26.965a35.628 35.628 0 0112.566-8.747c5.482-2.133 11.306-2.517 16.981-.896 8.555 2.432 15.893 7.851 21.675 15.723 5.29 7.19 9.258 16.405 11.968 27.456 4.906 19.925 5.76 46.144 2.453 77.76l1.131.853.554.406c16.15 12.288 27.392 29.802 33.344 50.133 9.28 31.723 4.608 67.307-11.392 87.211l-.384.448.043.064c8.896 16.256 14.293 33.429 15.445 51.2l.043.64c1.365 22.72-4.267 45.589-17.365 68.053l-.15.213.214.512c10.069 24.683 13.226 49.536 9.344 74.368l-.128.832a13.888 13.888 0 01-15.936 11.435 13.83 13.83 0 01-11.31-10.43 13.828 13.828 0 01-.21-5.399c3.562-22.038.213-44.139-10.24-66.624a13.713 13.713 0 01.853-13.163l.085-.128c12.886-19.712 18.219-39.04 17.067-58.027-.981-16.618-6.933-32.938-17.067-48.49a13.737 13.737 0 013.84-18.902l.192-.128c5.184-3.392 9.963-12.053 12.374-23.893a90.218 90.218 0 00-2.027-42.112c-4.373-14.933-12.373-27.392-23.573-35.904-12.694-9.685-29.504-14.357-50.774-13.013a13.93 13.93 0 01-13.482-7.915c-6.699-14.187-16.47-24.341-28.651-30.635a70.145 70.145 0 00-37.803-7.082c-26.56 2.112-49.984 17.088-56.96 35.968a13.91 13.91 0 01-13.013 9.066c-22.763.043-40.384 5.376-53.269 14.998-11.136 8.32-18.731 19.946-22.742 33.877a86.824 86.824 0 00-1.45 40.235c2.389 11.904 7.061 21.76 12.416 27.072l.17.149c4.523 4.416 5.483 11.307 2.326 16.747-7.68 13.269-13.419 33.045-14.358 52.053-1.066 21.717 3.968 40.576 15.339 54.101l.341.406a13.711 13.711 0 012.027 14.72c-12.288 26.368-16.064 48.042-11.989 65.109a13.91 13.91 0 01-27.072 6.357c-5.184-21.717-1.664-46.592 10.09-74.624l.299-.746-.17-.256a92.574 92.574 0 01-12.758-27.926l-.107-.405a122.965 122.965 0 01-3.776-38.08c.939-19.413 5.931-39.296 13.27-55.253l.256-.555-.043-.043c-6.25-8.917-10.88-20.33-13.44-32.96l-.107-.512a114.176 114.176 0 011.984-53.12c5.59-19.52 16.576-36.288 32.768-48.405 1.28-.96 2.624-1.92 3.968-2.816-3.392-31.851-2.538-58.24 2.39-78.293 2.709-11.051 6.698-20.267 11.989-27.456 5.76-7.851 13.099-13.27 21.653-15.723 5.675-1.621 11.52-1.259 17.003.896v.021zm87.808 193.92c19.968 0 38.4 6.678 52.181 18.24 13.44 11.243 21.44 26.347 21.44 41.387 0 18.944-8.661 33.707-24.17 43.136-13.227 8-30.955 11.883-51.264 11.883-21.526 0-39.915-5.526-53.184-15.659-13.163-10.027-20.544-24.107-20.544-39.36 0-15.083 8.49-30.229 22.528-41.515 14.25-11.456 33.066-18.112 53.013-18.112zm0 19.115a65.498 65.498 0 00-40.875 13.867c-9.834 7.893-15.402 17.813-15.402 26.666 0 9.131 4.48 17.686 13.013 24.192 9.707 7.403 23.979 11.691 41.451 11.691 17.045 0 31.424-3.136 41.216-9.088 9.877-5.973 14.933-14.635 14.933-26.816 0-9.024-5.248-18.987-14.571-26.795-10.325-8.64-24.32-13.717-39.765-13.717zm14.123 25.813l.085.086a7.431 7.431 0 01-1.195 10.453l-6.229 4.907v9.514a7.999 7.999 0 01-8.021 7.958 8.004 8.004 0 01-8.022-7.958v-9.813l-5.781-4.651a7.4 7.4 0 01-1.109-10.453 7.53 7.53 0 0110.538-1.088l4.587 3.669 4.693-3.712a7.533 7.533 0 0110.454 1.088zm-107.52-40.938c10.197 0 18.496 8.32 18.496 18.581a18.564 18.564 0 01-18.518 18.581 18.559 18.559 0 01-18.496-18.56 18.565 18.565 0 015.399-13.129 18.609 18.609 0 0113.119-5.473zm185.728 0c10.24 0 18.517 8.32 18.517 18.581a18.559 18.559 0 01-18.517 18.581 18.56 18.56 0 01-18.496-18.56 18.56 18.56 0 0118.496-18.602zM158.72 49.067l-.064.042a14.06 14.06 0 00-6.08 5.078l-.107.128c-2.944 4.032-5.504 9.962-7.424 17.749-3.626 14.763-4.608 34.795-2.645 59.349 9.173-2.73 19.179-4.437 29.952-5.056l.213-.021.406-.725a69.41 69.41 0 013.157-5.099c2.624-16.448.469-36.096-5.397-52.139-2.859-7.765-6.336-13.866-9.664-17.344a13.403 13.403 0 00-2.283-1.92l-.064-.042zm195.712.853l-.043.021a13.396 13.396 0 00-2.282 1.92c-3.328 3.478-6.827 9.6-9.664 17.366-6.187 16.938-8.256 37.888-4.907 54.869l1.237 2.069.171.299h.64a110.599 110.599 0 0131.275 4.523c1.834-23.979.81-43.584-2.731-58.07-1.92-7.786-4.48-13.717-7.445-17.749l-.086-.128a14.054 14.054 0 00-6.08-5.099h-.085v-.021z"
+                                fill="currentColor"
+                              />
+                            </svg>
+                          ) : null}
+                          {provider.label}
+                        </div>
+                        <div className="flex flex-col gap-3">
+                          {provider.models.map((model) => {
+                            const isVisible = modelSettings.visibility[model.key] ?? true
+                            return (
+                              <div key={model.key} className="flex items-center justify-between gap-4">
+                                <div>
+                                  <div className="text-[14px] font-medium text-gray-800 dark:text-gray-200">{model.title}</div>
+                                  {model.key.startsWith('ollama:') ? (
+                                    <div className="text-[12px] text-gray-500 dark:text-gray-400">{model.key.replace('ollama:', '')}</div>
+                                  ) : null}
+                                </div>
+                                <Switch
+                                  checked={isVisible}
+                                  onCheckedChange={(checked) => {
+                                    handleModelVisibilityChange(model.key, checked)
+                                  }}
+                                  aria-label={`Toggle ${model.title}`}
+                                  className="data-unchecked:bg-gray-300 dark:data-unchecked:bg-gray-600"
+                                />
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <div className="h-px w-full bg-[#E5E5E5] dark:bg-gray-700" />
+
+                <section>
+                  <div className="mb-1 flex items-center gap-2 text-[15px] font-semibold text-gray-900 dark:text-gray-100">
+                    <span>Local Models</span>
+                    <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                      beta
+                    </span>
+                  </div>
+                  <p className="mb-4 text-[13px] leading-relaxed text-gray-500 dark:text-gray-400">
+                    Connect to your local Ollama server and include those models in the picker.
+                  </p>
+
+                  <div className="flex flex-col gap-5">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="text-[14px] font-medium text-gray-800 dark:text-gray-200">Enable Local Models</div>
+                      <Switch
+                        checked={modelSettings.ollama.enabled}
+                        onCheckedChange={handleOllamaEnabledChange}
+                        aria-label="Enable local models"
+                        className="data-unchecked:bg-gray-300 dark:data-unchecked:bg-gray-600"
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[13px] font-medium text-gray-700 dark:text-gray-300">Ollama API URL</label>
+                      <Input
+                        value={modelSettings.ollama.url}
+                        onChange={(event) => handleOllamaUrlChange(event.target.value)}
+                        placeholder={DEFAULT_OLLAMA_URL}
+                        disabled={isFetchingOllamaModels}
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleFetchOllamaModels()
+                        }}
+                        disabled={isFetchingOllamaModels}
+                        className="rounded-[10px] bg-gray-100 px-4 py-2.5 text-[13px] font-semibold text-gray-800 shadow-sm transition-colors hover:bg-gray-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:bg-[#333333] dark:text-gray-200 dark:hover:bg-[#444444]"
+                      >
+                        {isFetchingOllamaModels ? 'Fetching...' : 'Fetch Local Models'}
+                      </button>
+                      {modelSettings.ollama.lastSyncedAt ? (
+                        <p className="self-center text-[12px] text-gray-500 dark:text-gray-400">
+                          Last synced {new Date(modelSettings.ollama.lastSyncedAt).toLocaleString()}
+                        </p>
+                      ) : null}
+                    </div>
+
+                    {modelSettings.ollama.models.length > 0 ? (
+                      <div>
+                        <div className="mb-2 text-[12px] font-semibold text-gray-700 dark:text-gray-300">Discovered Local Models</div>
+                        <div className="flex flex-wrap gap-2">
+                          {modelSettings.ollama.models.map((model) => (
+                            <span
+                              key={model.key}
+                              className="rounded-md border border-[#E5E5E5] px-2 py-1 text-[12px] text-gray-600 dark:border-gray-600 dark:text-gray-300"
+                            >
+                              {model.title}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+
+                {modelError ? (
+                  <p className="text-right text-[12px] text-red-600 dark:text-red-400">{modelError}</p>
+                ) : null}
+                {modelMessage ? (
+                  <p className="text-right text-[12px] text-emerald-600 dark:text-emerald-400">{modelMessage}</p>
                 ) : null}
               </div>
             </div>
