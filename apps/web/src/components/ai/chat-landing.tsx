@@ -190,6 +190,8 @@ const mobileLayoutMediaQuery = '(max-width: 767px)'
 const attachmentTextContentLimit = 20_000
 const attachmentImageDataUrlLimit = 6_000_000
 const attachmentPreviewDataUrlLimit = 8_000_000
+const selectedModelStorageKey = 'lovechat_selected_model_v1'
+const defaultSelectedModel = 'gpt-5'
 const greetingNameToken = '{name}'
 const forkIntentLabels: Record<ForkIntent, string> = {
   alternative: 'Alternative solution',
@@ -1083,10 +1085,23 @@ function buildForkTitle(intent: ForkIntent, customTitle: string, baseTitle: stri
   return `${forkIntentLabels[intent]}: ${baseTitle}`
 }
 
+function loadSelectedModelPreference() {
+  if (typeof window === 'undefined') {
+    return defaultSelectedModel
+  }
+
+  try {
+    const stored = window.localStorage.getItem(selectedModelStorageKey)?.trim()
+    return stored ? stored : defaultSelectedModel
+  } catch {
+    return defaultSelectedModel
+  }
+}
+
 function ChatLanding() {
   const navigate = useNavigate()
   const apiBaseUrl = useMemo(() => import.meta.env.VITE_API_URL ?? 'http://localhost:4000', [])
-  const [selectedModel, setSelectedModel] = useState('gpt-5')
+  const [selectedModel, setSelectedModel] = useState(loadSelectedModelPreference)
   const [activeTopic, setActiveTopic] = useState<Topic | null>(null)
   const [isMobileLayout, setIsMobileLayout] = useState(() => {
     if (typeof window === 'undefined') {
@@ -1169,6 +1184,19 @@ function ChatLanding() {
     return suggestions.slice(0, 3)
   }, [isMobileLayout, showAllMobileSuggestions, suggestions])
   const hiddenSuggestionCount = suggestions.length - visibleSuggestions.length
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const model = selectedModel.trim()
+    if (!model) {
+      return
+    }
+
+    window.localStorage.setItem(selectedModelStorageKey, model)
+  }, [selectedModel])
 
   const avatarNameSource = useMemo(() => fullName.trim() || nickname.trim(), [fullName, nickname])
   const avatarInitials = useMemo(() => getInitials(avatarNameSource), [avatarNameSource])
