@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { CodeXml, FileText, Link2, Pencil, SquareX, Trash2 } from 'lucide-react'
+import { CodeXml, FileText, GitBranch, Link2, Pencil, SquareX, Trash2 } from 'lucide-react'
 import ThemeToggle from '#/components/ThemeToggle'
 
 type ChatHeaderProps = {
@@ -9,6 +9,7 @@ type ChatHeaderProps = {
   onCopyLink: () => void | Promise<void>
   onExportPdf: () => void
   onExportMarkdown: () => void
+  onOpenBranchMap?: () => void
   onRenameChat: () => void | Promise<void>
   onClearChat: () => void
   onDeleteChat: () => void
@@ -21,6 +22,7 @@ function ChatHeader({
   onCopyLink,
   onExportPdf,
   onExportMarkdown,
+  onOpenBranchMap,
   onRenameChat,
   onClearChat,
   onDeleteChat,
@@ -96,6 +98,19 @@ function ChatHeader({
       ) : null}
 
       <div className="flex items-center gap-0.5 sm:gap-1">
+        {onOpenBranchMap ? (
+          <button
+            type="button"
+            onClick={onOpenBranchMap}
+            className="lovechat-accent-surface mr-1 flex h-9 items-center gap-2 rounded-lg px-3 text-[14px] font-medium text-gray-600 transition-colors focus:outline-none dark:text-gray-300"
+            aria-label="Open branch map"
+            title="Branch map"
+          >
+            <GitBranch size={15} strokeWidth={2} />
+            <span className="hidden sm:inline">Branches</span>
+          </button>
+        ) : null}
+
         <div className="relative">
           <button
             type="button"

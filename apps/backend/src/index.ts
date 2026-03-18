@@ -169,6 +169,11 @@ const renameChatSessionSchema = z.object({
   title: z.string().trim().min(1).max(120),
 })
 
+const forkChatSessionSchema = z.object({
+  messageIndex: z.number().int().min(0).optional(),
+  title: z.string().trim().min(1).max(120).optional(),
+})
+
 const memoryEntrySchema = z.object({
   content: z.string().trim().min(2).max(2_000),
   source: z.enum(['manual', 'auto']).optional().default('manual'),
@@ -3870,6 +3875,8 @@ app.get('/chat/sessions', async (request, reply) => {
       title: string
       created_at: string
       updated_at: string
+      parent_conversation_id: string | null
+      forked_from_message_id: number | null
       generation_status: 'queued' | 'in_progress' | null
     }>(
       `
@@ -3878,6 +3885,8 @@ app.get('/chat/sessions', async (request, reply) => {
         c.title,
         c.created_at,
         c.updated_at,
+        c.parent_conversation_id,
+        c.forked_from_message_id,
         g.status AS generation_status
       FROM chat_conversations c
       LEFT JOIN LATERAL (
@@ -3899,6 +3908,8 @@ app.get('/chat/sessions', async (request, reply) => {
         title: row.title,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        parentSessionId: row.parent_conversation_id,
+        forkedFromMessageId: row.forked_from_message_id,
         generationStatus: row.generation_status,
       })),
     })
@@ -3928,11 +3939,13 @@ app.post('/chat/sessions', async (request, reply) => {
       title: string
       created_at: string
       updated_at: string
+      parent_conversation_id: string | null
+      forked_from_message_id: number | null
     }>(
       `
-      INSERT INTO chat_conversations (id, user_id, title)
-      VALUES ($1, $2, $3)
-      RETURNING id, title, created_at, updated_at
+      INSERT INTO chat_conversations (id, user_id, title, parent_conversation_id, forked_from_message_id)
+      VALUES ($1, $2, $3, NULL, NULL)
+      RETURNING id, title, created_at, updated_at, parent_conversation_id, forked_from_message_id
       `,
       [chatSessionId, session.userId, title],
     )
@@ -3944,6 +3957,8 @@ app.post('/chat/sessions', async (request, reply) => {
         title: createdSession.title,
         createdAt: createdSession.created_at,
         updatedAt: createdSession.updated_at,
+        parentSessionId: createdSession.parent_conversation_id,
+        forkedFromMessageId: createdSession.forked_from_message_id,
       },
     })
   } catch (error) {
@@ -3957,6 +3972,167 @@ app.post('/chat/sessions', async (request, reply) => {
     request.log.error(error)
     return reply.code(500).send({
       message: 'Unable to create chat session',
+    })
+  }
+})
+
+app.post('/chat/sessions/:sessionId/fork', async (request, reply) => {
+  try {
+    const session = await getSessionFromRequest(request)
+    if (!session) {
+      return reply.code(401).send({
+        message: 'Unauthorized',
+      })
+    }
+
+    const { sessionId } = chatSessionIdParamSchema.parse(request.params)
+    const body = forkChatSessionSchema.parse(request.body ?? {})
+
+    const sourceSessionResult = await pgPool.query<{
+      id: string
+      title: string
+    }>(
+      `
+      SELECT id, title
+      FROM chat_conversations
+      WHERE id = $1 AND user_id = $2
+      LIMIT 1
+      `,
+      [sessionId, session.userId],
+    )
+
+    const sourceSession = sourceSessionResult.rows[0]
+    if (!sourceSession) {
+      return reply.code(404).send({
+        message: 'Chat session not found',
+      })
+    }
+
+    const sourceMessagesResult = await pgPool.query<{
+      id: number
+      role: 'user' | 'assistant'
+      content: string
+      model: string | null
+      attachments_json: unknown
+      citations_json: unknown
+      memory_context_json: unknown
+      searched_web: boolean
+      thinking_text: string | null
+    }>(
+      `
+      SELECT id, role, content, model, attachments_json, citations_json, memory_context_json, searched_web, thinking_text
+      FROM chat_messages
+      WHERE conversation_id = $1
+      ORDER BY created_at ASC, id ASC
+      `,
+      [sessionId],
+    )
+
+    const sourceMessages = sourceMessagesResult.rows
+    if (body.messageIndex !== undefined && body.messageIndex >= sourceMessages.length) {
+      return reply.code(400).send({
+        message: 'Invalid message index for fork',
+      })
+    }
+
+    const effectiveMessageIndex =
+      sourceMessages.length === 0
+        ? -1
+        : body.messageIndex !== undefined
+          ? body.messageIndex
+          : sourceMessages.length - 1
+
+    const copiedMessages =
+      effectiveMessageIndex >= 0 ? sourceMessages.slice(0, effectiveMessageIndex + 1) : []
+    const branchPointMessageId =
+      effectiveMessageIndex >= 0 ? sourceMessages[effectiveMessageIndex]?.id ?? null : null
+
+    const derivedTitle = body.title?.trim() || `Fork: ${sourceSession.title}`
+    const nextTitle = derivedTitle.slice(0, 120)
+    const forkedSessionId = randomUUID()
+
+    const dbClient = await pgPool.connect()
+    try {
+      await dbClient.query('BEGIN')
+
+      const forkedSessionResult = await dbClient.query<{
+        id: string
+        title: string
+        created_at: string
+        updated_at: string
+        parent_conversation_id: string | null
+        forked_from_message_id: number | null
+      }>(
+        `
+        INSERT INTO chat_conversations (id, user_id, title, parent_conversation_id, forked_from_message_id)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, title, created_at, updated_at, parent_conversation_id, forked_from_message_id
+        `,
+        [forkedSessionId, session.userId, nextTitle, sessionId, branchPointMessageId],
+      )
+
+      for (const message of copiedMessages) {
+        await dbClient.query(
+          `
+          INSERT INTO chat_messages (
+            conversation_id,
+            user_id,
+            role,
+            content,
+            model,
+            attachments_json,
+            citations_json,
+            memory_context_json,
+            searched_web,
+            thinking_text
+          )
+          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10)
+          `,
+          [
+            forkedSessionId,
+            session.userId,
+            message.role,
+            message.content,
+            message.model,
+            JSON.stringify(Array.isArray(message.attachments_json) ? message.attachments_json : []),
+            JSON.stringify(Array.isArray(message.citations_json) ? message.citations_json : []),
+            JSON.stringify(Array.isArray(message.memory_context_json) ? message.memory_context_json : []),
+            Boolean(message.searched_web),
+            message.thinking_text,
+          ],
+        )
+      }
+
+      await dbClient.query('COMMIT')
+
+      const forkedSession = forkedSessionResult.rows[0]
+      return reply.code(201).send({
+        session: {
+          id: forkedSession.id,
+          title: forkedSession.title,
+          createdAt: forkedSession.created_at,
+          updatedAt: forkedSession.updated_at,
+          parentSessionId: forkedSession.parent_conversation_id,
+          forkedFromMessageId: forkedSession.forked_from_message_id,
+        },
+      })
+    } catch (dbError) {
+      await dbClient.query('ROLLBACK')
+      throw dbError
+    } finally {
+      dbClient.release()
+    }
+  } catch (error) {
+    if (error instanceof ZodError) {
+      return reply.code(400).send({
+        message: 'Invalid fork payload',
+        issues: error.issues,
+      })
+    }
+
+    request.log.error(error)
+    return reply.code(500).send({
+      message: 'Unable to fork chat session',
     })
   }
 })
@@ -4006,9 +4182,11 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
       title: string
       created_at: string
       updated_at: string
+      parent_conversation_id: string | null
+      forked_from_message_id: number | null
     }>(
       `
-      SELECT id, title, created_at, updated_at
+      SELECT id, title, created_at, updated_at, parent_conversation_id, forked_from_message_id
       FROM chat_conversations
       WHERE id = $1 AND user_id = $2
       LIMIT 1
@@ -4024,6 +4202,7 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
     }
 
     const messageResult = await pgPool.query<{
+      id: number
       role: 'user' | 'assistant'
       content: string
       attachments_json: unknown
@@ -4033,7 +4212,7 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
       thinking_text: string | null
     }>(
       `
-      SELECT role, content, attachments_json, citations_json, memory_context_json, searched_web, thinking_text
+      SELECT id, role, content, attachments_json, citations_json, memory_context_json, searched_web, thinking_text
       FROM chat_messages
       WHERE conversation_id = $1
       ORDER BY created_at ASC, id ASC
@@ -4072,8 +4251,11 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
         title: existingSession.title,
         createdAt: existingSession.created_at,
         updatedAt: existingSession.updated_at,
+        parentSessionId: existingSession.parent_conversation_id,
+        forkedFromMessageId: existingSession.forked_from_message_id,
       },
       messages: messageResult.rows.map((message) => ({
+        messageId: message.id,
         role: message.role,
         content: message.content,
         ...(Array.isArray(message.attachments_json) && message.attachments_json.length > 0
@@ -4146,12 +4328,14 @@ app.patch('/chat/sessions/:sessionId', async (request, reply) => {
       title: string
       created_at: string
       updated_at: string
+      parent_conversation_id: string | null
+      forked_from_message_id: number | null
     }>(
       `
       UPDATE chat_conversations
       SET title = $1, updated_at = NOW()
       WHERE id = $2 AND user_id = $3
-      RETURNING id, title, created_at, updated_at
+      RETURNING id, title, created_at, updated_at, parent_conversation_id, forked_from_message_id
       `,
       [body.title, sessionId, session.userId],
     )
@@ -4169,6 +4353,8 @@ app.patch('/chat/sessions/:sessionId', async (request, reply) => {
         title: updatedSession.title,
         createdAt: updatedSession.created_at,
         updatedAt: updatedSession.updated_at,
+        parentSessionId: updatedSession.parent_conversation_id,
+        forkedFromMessageId: updatedSession.forked_from_message_id,
       },
     })
   } catch (error) {

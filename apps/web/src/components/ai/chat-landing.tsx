@@ -11,6 +11,7 @@ import {
   FileSpreadsheet,
   FileText,
   FileVideo,
+  GitBranch,
   Pencil,
   RotateCcw,
 } from 'lucide-react'
@@ -54,12 +55,26 @@ type UsedMemoryContext = {
 
 type ChatMessage = {
   id: string
+  messageId?: number
   role: ChatRole
   content: string
   attachments?: ChatAttachment[]
   citations?: SerializableCitation[]
   memoryContext?: UsedMemoryContext[]
   searchedWeb?: boolean
+}
+
+type ForkIntent = 'alternative' | 'tone' | 'research' | 'debug' | 'custom'
+
+type BranchNodeDialogState = {
+  messageId: string
+  messageDbId: number
+  messageIndex: number
+}
+
+type CompareDialogState = {
+  branchSessionId: string
+  forkIndex: number
 }
 
 type OnboardingProfileResponse = {
@@ -110,6 +125,9 @@ type ChatSessionSummary = {
   title: string
   createdAt: string
   updatedAt: string
+  parentSessionId?: string | null
+  forkedFromMessageId?: number | null
+  branchDepth?: number
   generationStatus?: 'queued' | 'in_progress' | null
 }
 
@@ -117,9 +135,14 @@ type ChatSessionsResponse = {
   sessions: ChatSessionSummary[]
 }
 
+type ForkChatSessionResponse = {
+  session: ChatSessionSummary
+}
+
 type ChatSessionResponse = {
   session: ChatSessionSummary
   messages: Array<{
+    messageId?: number
     role: ChatRole
     content: string
     attachments?: unknown
@@ -168,6 +191,13 @@ const attachmentTextContentLimit = 20_000
 const attachmentImageDataUrlLimit = 6_000_000
 const attachmentPreviewDataUrlLimit = 8_000_000
 const greetingNameToken = '{name}'
+const forkIntentLabels: Record<ForkIntent, string> = {
+  alternative: 'Alternative solution',
+  tone: 'Different tone',
+  research: 'Research path',
+  debug: 'Debug path',
+  custom: 'Custom',
+}
 const assistantImageMarkdownRegex =
   /!\[[^\]]*\]\((?:<(data:image\/[^>]+|https?:\/\/[^>]+)>|(data:image\/[^)\s]+|https?:\/\/[^)\s]+))\)/gi
 const assistantImageDataUrlRegex = /data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi
@@ -957,6 +987,7 @@ function createMessage(
   role: ChatRole,
   content: string,
   metadata?: {
+    messageId?: number
     attachments?: ChatAttachment[]
     citations?: SerializableCitation[]
     memoryContext?: UsedMemoryContext[]
@@ -965,6 +996,7 @@ function createMessage(
 ): ChatMessage {
   return {
     id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    ...(metadata?.messageId !== undefined ? { messageId: metadata.messageId } : {}),
     role,
     content,
     ...(metadata?.attachments ? { attachments: metadata.attachments } : {}),
@@ -1003,6 +1035,52 @@ function getSessionBucketLabel(updatedAt: string) {
   }
 
   return 'Older'
+}
+
+function mapSessionsWithBranchDepth(sessions: ChatSessionSummary[]) {
+  const sessionById = new Map<string, ChatSessionSummary>()
+  for (const session of sessions) {
+    sessionById.set(session.id, session)
+  }
+
+  const depthMemo = new Map<string, number>()
+
+  const resolveDepth = (sessionId: string, visited = new Set<string>()): number => {
+    if (depthMemo.has(sessionId)) {
+      return depthMemo.get(sessionId) ?? 0
+    }
+
+    const session = sessionById.get(sessionId)
+    const parentId = session?.parentSessionId ?? null
+    if (!parentId || !sessionById.has(parentId) || visited.has(parentId)) {
+      depthMemo.set(sessionId, 0)
+      return 0
+    }
+
+    const nextVisited = new Set(visited)
+    nextVisited.add(sessionId)
+    const depth = resolveDepth(parentId, nextVisited) + 1
+    depthMemo.set(sessionId, depth)
+    return depth
+  }
+
+  return sessions.map((session) => ({
+    ...session,
+    branchDepth: resolveDepth(session.id),
+  }))
+}
+
+function buildForkTitle(intent: ForkIntent, customTitle: string, baseTitle: string) {
+  const trimmed = customTitle.trim()
+  if (trimmed) {
+    return trimmed
+  }
+
+  if (intent === 'custom') {
+    return `Fork: ${baseTitle}`
+  }
+
+  return `${forkIntentLabels[intent]}: ${baseTitle}`
 }
 
 function ChatLanding() {
@@ -1048,6 +1126,16 @@ function ChatLanding() {
   const [showAllMobileSuggestions, setShowAllMobileSuggestions] = useState(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const [recentlyRememberedMessageId, setRecentlyRememberedMessageId] = useState<string | null>(null)
+  const [isForkDialogOpen, setIsForkDialogOpen] = useState(false)
+  const [forkTargetMessageId, setForkTargetMessageId] = useState<string | null>(null)
+  const [forkIntent, setForkIntent] = useState<ForkIntent>('alternative')
+  const [forkTitleDraft, setForkTitleDraft] = useState('')
+  const [isForkSaving, setIsForkSaving] = useState(false)
+  const [isBranchMapOpen, setIsBranchMapOpen] = useState(false)
+  const [branchNodeDialog, setBranchNodeDialog] = useState<BranchNodeDialogState | null>(null)
+  const [compareDialog, setCompareDialog] = useState<CompareDialogState | null>(null)
+  const [branchComparePayloadBySessionId, setBranchComparePayloadBySessionId] =
+    useState<Record<string, ChatSessionResponse['messages']>>({})
   const messageListRef = useRef<HTMLDivElement | null>(null)
   const renameInputRef = useRef<HTMLInputElement | null>(null)
   const copyTimeoutRef = useRef<number | null>(null)
@@ -1095,15 +1183,60 @@ function ChatLanding() {
   const activeChatTitle = useMemo(() => {
     return chatSessions.find((session) => session.id === activeSessionId)?.title ?? 'New chat'
   }, [chatSessions, activeSessionId])
+  const sessionsWithBranchDepth = useMemo(() => mapSessionsWithBranchDepth(chatSessions), [chatSessions])
   const groupedSessions = useMemo(() => {
-    return chatSessions.reduce<Record<string, ChatSessionSummary[]>>((accumulator, session) => {
+    return sessionsWithBranchDepth.reduce<Record<string, ChatSessionSummary[]>>((accumulator, session) => {
       const bucket = getSessionBucketLabel(session.updatedAt)
       const current = accumulator[bucket] ?? []
       current.push(session)
       accumulator[bucket] = current
       return accumulator
     }, {})
-  }, [chatSessions])
+  }, [sessionsWithBranchDepth])
+  const activeSession = useMemo(
+    () => chatSessions.find((session) => session.id === activeSessionId) ?? null,
+    [chatSessions, activeSessionId],
+  )
+  const isActiveSessionFork = Boolean(activeSession?.parentSessionId)
+  const currentBranchChildren = useMemo(() => {
+    if (!activeSessionId) {
+      return [] as ChatSessionSummary[]
+    }
+
+    return sessionsWithBranchDepth.filter((session) => session.parentSessionId === activeSessionId)
+  }, [sessionsWithBranchDepth, activeSessionId])
+  const branchesByForkMessageId = useMemo(() => {
+    if (!activeSessionId) {
+      return {} as Record<number, ChatSessionSummary[]>
+    }
+
+    return sessionsWithBranchDepth.reduce<Record<number, ChatSessionSummary[]>>((accumulator, session) => {
+      if (session.parentSessionId !== activeSessionId || !session.forkedFromMessageId) {
+        return accumulator
+      }
+
+      const current = accumulator[session.forkedFromMessageId] ?? []
+      current.push(session)
+      accumulator[session.forkedFromMessageId] = current
+      return accumulator
+    }, {})
+  }, [sessionsWithBranchDepth, activeSessionId])
+  const branchTreeChildrenByParent = useMemo(() => {
+    return sessionsWithBranchDepth.reduce<Record<string, ChatSessionSummary[]>>((accumulator, session) => {
+      const parentId = session.parentSessionId ?? '__root__'
+      const current = accumulator[parentId] ?? []
+      current.push(session)
+      accumulator[parentId] = current
+      return accumulator
+    }, {})
+  }, [sessionsWithBranchDepth])
+  const forkTargetMessage = useMemo(() => {
+    if (!forkTargetMessageId) {
+      return null
+    }
+
+    return messages.find((message) => message.id === forkTargetMessageId) ?? null
+  }, [messages, forkTargetMessageId])
 
   const activeStreamingContent = useMemo(() => {
     if (!streamingMessageId) {
@@ -1297,6 +1430,7 @@ function ChatLanding() {
       const memoryContext = normalizeMemoryContext(item.memoryContext)
       const attachments = normalizeAttachments(item.attachments)
       return createMessage(item.role, item.content, {
+        ...(item.messageId !== undefined ? { messageId: item.messageId } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(citations.length > 0 ? { citations } : {}),
         ...(memoryContext.length > 0 ? { memoryContext } : {}),
@@ -1568,6 +1702,8 @@ function ChatLanding() {
             title: normalizedNextTitle || 'New chat',
             createdAt: now,
             updatedAt: now,
+            parentSessionId: null,
+            forkedFromMessageId: null,
           },
           ...previousSessions,
         ])
@@ -2875,6 +3011,195 @@ function ChatLanding() {
     }
   }
 
+  function handleOpenForkDialog(messageId: string) {
+    if (isLoading) {
+      return
+    }
+
+    setForkTargetMessageId(messageId)
+    setForkIntent('alternative')
+    setForkTitleDraft('')
+    setIsForkDialogOpen(true)
+  }
+
+  function closeForkDialog() {
+    if (isForkSaving) {
+      return
+    }
+
+    setIsForkDialogOpen(false)
+    setForkTargetMessageId(null)
+    setForkTitleDraft('')
+    setForkIntent('alternative')
+  }
+
+  async function performForkFromMessage(messageId: string, title?: string) {
+    if (!activeSessionId) {
+      setErrorMessage('Open a chat session before forking.')
+      return false
+    }
+
+    const token = getSessionToken()
+    if (!token) {
+      setErrorMessage('Your session has expired. Please sign in again.')
+      return false
+    }
+
+    const forkIndex = messages.findIndex((message) => message.id === messageId)
+    if (forkIndex < 0) {
+      setErrorMessage('Unable to determine where to fork this chat.')
+      return false
+    }
+
+    const response = await fetch(`${apiBaseUrl}/chat/sessions/${activeSessionId}/fork`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        messageIndex: forkIndex,
+        ...(title ? { title } : {}),
+      }),
+    })
+
+    if (!response.ok) {
+      let message = 'Unable to fork chat session'
+      try {
+        const payload = (await response.json()) as { message?: string }
+        if (payload.message) {
+          message = payload.message
+        }
+      } catch {
+        // Keep fallback message.
+      }
+
+      setErrorMessage(message)
+      return false
+    }
+
+    const payload = (await response.json()) as ForkChatSessionResponse
+    setChatSessions((previousSessions) => sortSessionsByUpdatedAt([payload.session, ...previousSessions]))
+    await openSession(payload.session.id)
+    return true
+  }
+
+  async function submitForkDialog() {
+    if (!forkTargetMessage || isForkSaving || isLoading) {
+      return
+    }
+
+    const sourceTitle = activeSession?.title ?? 'New chat'
+    const forkTitle = buildForkTitle(forkIntent, forkTitleDraft, sourceTitle)
+
+    setIsForkSaving(true)
+    try {
+      const didFork = await performForkFromMessage(forkTargetMessage.id, forkTitle)
+      if (didFork) {
+        closeForkDialog()
+      }
+    } finally {
+      setIsForkSaving(false)
+    }
+  }
+
+  async function loadSessionMessagesForCompare(sessionId: string) {
+    const existing = branchComparePayloadBySessionId[sessionId]
+    if (existing) {
+      return existing
+    }
+
+    const token = getSessionToken()
+    if (!token) {
+      setErrorMessage('Your session has expired. Please sign in again.')
+      return null
+    }
+
+    const response = await fetch(`${apiBaseUrl}/chat/sessions/${sessionId}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      setErrorMessage('Unable to load branch details.')
+      return null
+    }
+
+    const payload = (await response.json()) as ChatSessionResponse
+    setBranchComparePayloadBySessionId((previous) => ({
+      ...previous,
+      [sessionId]: payload.messages,
+    }))
+    return payload.messages
+  }
+
+  function handleOpenBranchNodeActions(message: ChatMessage) {
+    if (message.messageId === undefined) {
+      return
+    }
+
+    const messageIndex = messages.findIndex((candidate) => candidate.id === message.id)
+    if (messageIndex < 0) {
+      return
+    }
+
+    setBranchNodeDialog({
+      messageId: message.id,
+      messageDbId: message.messageId,
+      messageIndex,
+    })
+  }
+
+  async function handleCompareBranchAtNode(branchSessionId: string, forkIndex: number) {
+    const loaded = await loadSessionMessagesForCompare(branchSessionId)
+    if (!loaded) {
+      return
+    }
+
+    setCompareDialog({
+      branchSessionId,
+      forkIndex,
+    })
+  }
+
+  function buildContinuationTextFromUiMessages(list: ChatMessage[], forkIndex: number) {
+    return list
+      .slice(forkIndex + 1)
+      .map((message) => `${message.role === 'assistant' ? 'Assistant' : 'You'}: ${message.content}`)
+      .join('\n\n')
+      .trim()
+  }
+
+  function buildContinuationTextFromApiMessages(list: ChatSessionResponse['messages'], forkIndex: number) {
+    return list
+      .slice(forkIndex + 1)
+      .map((message) => `${message.role === 'assistant' ? 'Assistant' : 'You'}: ${message.content}`)
+      .join('\n\n')
+      .trim()
+  }
+
+  function handleUseComparedBranchResponse() {
+    if (!compareDialog) {
+      return
+    }
+
+    const branchMessages = branchComparePayloadBySessionId[compareDialog.branchSessionId]
+    if (!branchMessages) {
+      return
+    }
+
+    const continuation = buildContinuationTextFromApiMessages(branchMessages, compareDialog.forkIndex)
+    if (!continuation) {
+      setErrorMessage('No branch continuation is available to merge.')
+      return
+    }
+
+    setPrompt(`Use this branch continuation as the baseline and continue:\n\n${continuation}`)
+    setCompareDialog(null)
+    setBranchNodeDialog(null)
+  }
+
   async function handleVisualizationAction(action: ChartAction) {
     if (isLoading) {
       return
@@ -2933,6 +3258,40 @@ function ChatLanding() {
     setDesktopSidebarOpen((current) => !current)
   }
 
+  function renderBranchTree(parentId: string | null, depth = 0): JSX.Element | null {
+    const key = parentId ?? '__root__'
+    const children = (branchTreeChildrenByParent[key] ?? []).slice().sort((left, right) => {
+      return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
+    })
+
+    if (children.length === 0) {
+      return null
+    }
+
+    return (
+      <ul className="space-y-2">
+        {children.map((session) => {
+          const isActive = session.id === activeSessionId
+
+          return (
+            <li key={`tree-${session.id}`}>
+              <button
+                type="button"
+                onClick={() => void openSession(session.id)}
+                className={`flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-[13px] transition-colors ${isActive ? 'border-blue-300 bg-blue-50 text-blue-900' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'}`}
+                style={{ marginLeft: `${Math.min(depth, 8) * 14}px` }}
+              >
+                <GitBranch className="size-3.5 shrink-0 text-gray-400" />
+                <span className="truncate">{session.title}</span>
+              </button>
+              <div className="mt-1">{renderBranchTree(session.id, depth + 1)}</div>
+            </li>
+          )
+        })}
+      </ul>
+    )
+  }
+
   return (
     <main className="lovechat-shell relative flex h-screen overflow-hidden bg-[#F9FAFB] p-0 text-gray-900 transition-colors duration-200 sm:p-2 md:p-3 dark:bg-[#171717] dark:text-gray-100">
       {isMobileLayout && sidebarOpen ? (
@@ -2986,6 +3345,7 @@ function ChatLanding() {
           chatTitle={activeChatTitle}
           showSidebarToggle={isMobileLayout}
           onToggleSidebar={toggleSidebar}
+          onOpenBranchMap={isActiveSessionFork ? () => setIsBranchMapOpen(true) : undefined}
           onCopyLink={handleCopyShareLink}
           onExportPdf={handleExportPdf}
           onExportMarkdown={handleExportMarkdown}
@@ -3072,6 +3432,12 @@ function ChatLanding() {
               className="min-h-0 flex-1 overflow-y-auto pb-44 [&::-webkit-scrollbar-thumb]:rounded-[10px] [&::-webkit-scrollbar-thumb]:bg-[#E5E7EB] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1.5"
             >
               <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-start gap-8 pt-8 pb-4">
+                {currentBranchChildren.length === 0 ? (
+                  <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] text-blue-900">
+                    New: Branch this conversation like Git. Use Fork chat from here on any message to explore alternatives.
+                  </div>
+                ) : null}
+
                 {messages.map((message) =>
                   message.role === 'user' ? (
                     <div key={message.id} className="group relative flex w-full flex-col items-end">
@@ -3170,6 +3536,29 @@ function ChatLanding() {
                               <Copy className="size-3.5" />
                             )}
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenForkDialog(message.id)}
+                            className="p-1 text-gray-400 transition-colors hover:text-gray-600"
+                            aria-label="Fork chat from here"
+                            title="Fork chat from here"
+                            disabled={isLoading}
+                          >
+                            <GitBranch className="size-3.5" />
+                          </button>
+
+                          {message.messageId !== undefined &&
+                          (branchesByForkMessageId[message.messageId]?.length ?? 0) > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenBranchNodeActions(message)}
+                              className="rounded-md px-1.5 py-0.5 text-[11px] font-medium text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700"
+                              aria-label="Open branches from this point"
+                              title="Switch or compare branches"
+                            >
+                              {branchesByForkMessageId[message.messageId]?.length} branch{(branchesByForkMessageId[message.messageId]?.length ?? 0) === 1 ? '' : 'es'}
+                            </button>
+                          ) : null}
                         </div>
                       ) : null}
                     </div>
@@ -3311,6 +3700,30 @@ function ChatLanding() {
                               <BookMarked className="size-3.5" />
                             )}
                           </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleOpenForkDialog(message.id)}
+                            className="p-1 text-gray-400 transition-colors hover:text-gray-600"
+                            aria-label="Fork chat from here"
+                            title="Fork chat from here"
+                            disabled={isLoading}
+                          >
+                            <GitBranch className="size-3.5" />
+                          </button>
+
+                          {message.messageId !== undefined &&
+                          (branchesByForkMessageId[message.messageId]?.length ?? 0) > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenBranchNodeActions(message)}
+                              className="rounded-md px-1.5 py-0.5 text-[11px] font-medium text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700"
+                              aria-label="Open branches from this point"
+                              title="Switch or compare branches"
+                            >
+                              {branchesByForkMessageId[message.messageId]?.length} branch{(branchesByForkMessageId[message.messageId]?.length ?? 0) === 1 ? '' : 'es'}
+                            </button>
+                          ) : null}
                           </div>
                         ) : null}
                             </>
@@ -3396,6 +3809,209 @@ function ChatLanding() {
           setAvatarDataUrl(nextAvatarDataUrl)
         }}
       />
+
+      {isBranchMapOpen ? (
+        <div
+          className="fixed inset-0 z-[57] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+          onClick={() => setIsBranchMapOpen(false)}
+        >
+          <div
+            className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-[20px] border border-[#E5E5E5] bg-white shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[#E5E5E5] px-5 py-4">
+              <div>
+                <h3 className="text-[18px] font-semibold text-gray-900">Conversation Branch Map</h3>
+                <p className="text-[13px] text-gray-500">Visual tree of all sessions and branch lineage.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsBranchMapOpen(false)}
+                className="rounded-md px-2 py-1 text-[13px] text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+              >
+                Close
+              </button>
+            </div>
+            <div className="overflow-y-auto p-4">{renderBranchTree(null)}</div>
+          </div>
+        </div>
+      ) : null}
+
+      {branchNodeDialog ? (
+        <div
+          className="fixed inset-0 z-[58] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+          onClick={() => setBranchNodeDialog(null)}
+        >
+          <div
+            className="w-full max-w-xl rounded-[20px] border border-[#E5E5E5] bg-white p-5 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="text-[17px] font-semibold text-gray-900">Branches At This Message</h3>
+            <p className="mt-1 text-[13px] text-gray-500">
+              Switch to a sibling branch or compare branch continuations from this exact node.
+            </p>
+
+            <div className="mt-4 space-y-2">
+              {(branchesByForkMessageId[branchNodeDialog.messageDbId] ?? []).length === 0 ? (
+                <p className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-[13px] text-gray-600">
+                  No branches were forked from this message yet.
+                </p>
+              ) : (
+                (branchesByForkMessageId[branchNodeDialog.messageDbId] ?? []).map((branch) => (
+                  <div
+                    key={`branch-node-${branch.id}`}
+                    className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2"
+                  >
+                    <div className="min-w-0 pr-2">
+                      <p className="truncate text-[13px] font-medium text-gray-800">{branch.title}</p>
+                      <p className="text-[11px] text-gray-500">Updated {new Date(branch.updatedAt).toLocaleString()}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void openSession(branch.id)
+                          setBranchNodeDialog(null)
+                        }}
+                        className="rounded-md border border-gray-300 px-2 py-1 text-[12px] font-medium text-gray-700 hover:bg-gray-50"
+                      >
+                        Switch
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleCompareBranchAtNode(branch.id, branchNodeDialog.messageIndex)}
+                        className="rounded-md border border-blue-300 bg-blue-50 px-2 py-1 text-[12px] font-medium text-blue-800 hover:bg-blue-100"
+                      >
+                        Compare
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {compareDialog ? (
+        <div
+          className="fixed inset-0 z-[59] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+          onClick={() => setCompareDialog(null)}
+        >
+          <div
+            className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-[20px] border border-[#E5E5E5] bg-white shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[#E5E5E5] px-5 py-4">
+              <div>
+                <h3 className="text-[18px] font-semibold text-gray-900">Compare Branch Continuations</h3>
+                <p className="text-[13px] text-gray-500">Side-by-side branch output after this fork point.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCompareDialog(null)}
+                className="rounded-md px-2 py-1 text-[13px] text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden md:grid-cols-2">
+              <div className="min-h-0 overflow-y-auto border-b border-[#E5E5E5] p-4 md:border-r md:border-b-0">
+                <p className="mb-2 text-[12px] font-semibold tracking-wide text-gray-500 uppercase">Current Branch</p>
+                <pre className="whitespace-pre-wrap text-[13px] leading-relaxed text-gray-800">{buildContinuationTextFromUiMessages(messages, compareDialog.forkIndex) || 'No continuation yet.'}</pre>
+              </div>
+              <div className="min-h-0 overflow-y-auto p-4">
+                <p className="mb-2 text-[12px] font-semibold tracking-wide text-gray-500 uppercase">Selected Branch</p>
+                <pre className="whitespace-pre-wrap text-[13px] leading-relaxed text-gray-800">{buildContinuationTextFromApiMessages(branchComparePayloadBySessionId[compareDialog.branchSessionId] ?? [], compareDialog.forkIndex) || 'No continuation yet.'}</pre>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-[#E5E5E5] px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setCompareDialog(null)}
+                className="rounded-md border border-gray-300 px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Keep Comparing
+              </button>
+              <button
+                type="button"
+                onClick={handleUseComparedBranchResponse}
+                className="rounded-md border border-blue-300 bg-blue-50 px-3 py-1.5 text-[13px] font-medium text-blue-800 hover:bg-blue-100"
+              >
+                Use Selected Branch Response
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isForkDialogOpen ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+          onClick={closeForkDialog}
+        >
+          <div
+            className="w-full max-w-lg rounded-[20px] border border-[#E5E5E5] bg-white p-5 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="text-[18px] font-semibold text-gray-900">Fork Chat From Here</h3>
+            <p className="mt-1 text-[13px] text-gray-500">
+              Choose an intent label so this branch is easier to understand later.
+            </p>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              {(Object.keys(forkIntentLabels) as ForkIntent[]).map((intent) => {
+                const isSelected = forkIntent === intent
+                return (
+                  <button
+                    key={`fork-intent-${intent}`}
+                    type="button"
+                    onClick={() => setForkIntent(intent)}
+                    className={`rounded-full border px-3 py-1 text-[12px] font-medium transition-colors ${isSelected ? 'border-blue-300 bg-blue-50 text-blue-800' : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'}`}
+                  >
+                    {forkIntentLabels[intent]}
+                  </button>
+                )
+              })}
+            </div>
+
+            <div className="mt-4">
+              <label className="mb-1 block text-[12px] font-medium text-gray-600" htmlFor="fork-title-input">
+                Branch title
+              </label>
+              <input
+                id="fork-title-input"
+                value={forkTitleDraft}
+                onChange={(event) => setForkTitleDraft(event.target.value)}
+                placeholder={buildForkTitle(forkIntent, '', activeSession?.title ?? 'New chat')}
+                maxLength={120}
+                className="w-full rounded-[10px] border border-[#E5E5E5] bg-white px-3 py-2 text-[14px] text-gray-900 outline-none transition-colors focus:border-gray-400"
+              />
+            </div>
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeForkDialog}
+                className="rounded-md border border-gray-300 px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+                disabled={isForkSaving}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitForkDialog()}
+                className="rounded-md border border-blue-300 bg-blue-50 px-3 py-1.5 text-[13px] font-medium text-blue-800 hover:bg-blue-100 disabled:opacity-60"
+                disabled={isForkSaving || !forkTargetMessage}
+              >
+                {isForkSaving ? 'Creating branch...' : 'Create branch'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {sessionIdPendingDelete ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">

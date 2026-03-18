@@ -95,6 +95,8 @@ export async function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS chat_conversations (
       id UUID PRIMARY KEY,
       user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      parent_conversation_id UUID REFERENCES chat_conversations(id) ON DELETE SET NULL,
+      forked_from_message_id BIGINT,
       title TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -102,8 +104,36 @@ export async function initializeDatabase() {
   `)
 
   await pgPool.query(`
+    ALTER TABLE chat_conversations
+    ADD COLUMN IF NOT EXISTS parent_conversation_id UUID
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE chat_conversations
+    ADD COLUMN IF NOT EXISTS forked_from_message_id BIGINT
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE chat_conversations
+    DROP CONSTRAINT IF EXISTS chat_conversations_parent_conversation_id_fkey
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE chat_conversations
+    ADD CONSTRAINT chat_conversations_parent_conversation_id_fkey
+    FOREIGN KEY (parent_conversation_id)
+    REFERENCES chat_conversations(id)
+    ON DELETE SET NULL
+  `)
+
+  await pgPool.query(`
     CREATE INDEX IF NOT EXISTS idx_chat_conversations_user_updated
     ON chat_conversations (user_id, updated_at DESC)
+  `)
+
+  await pgPool.query(`
+    CREATE INDEX IF NOT EXISTS idx_chat_conversations_parent
+    ON chat_conversations (parent_conversation_id)
   `)
 
   await pgPool.query(`
@@ -146,6 +176,19 @@ export async function initializeDatabase() {
   await pgPool.query(`
     ALTER TABLE chat_messages
     ADD COLUMN IF NOT EXISTS thinking_text TEXT
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE chat_conversations
+    DROP CONSTRAINT IF EXISTS chat_conversations_forked_from_message_id_fkey
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE chat_conversations
+    ADD CONSTRAINT chat_conversations_forked_from_message_id_fkey
+    FOREIGN KEY (forked_from_message_id)
+    REFERENCES chat_messages(id)
+    ON DELETE SET NULL
   `)
 
   await pgPool.query(`

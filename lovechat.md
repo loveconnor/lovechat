@@ -121,6 +121,7 @@ Features:
 
 - Create new chat session
 - Open existing session
+- Fork chat from any message (branch from that point)
 - Rename session
 - Delete one session
 - Delete all sessions (via settings)
@@ -131,6 +132,49 @@ Features:
 - Session search/filter in sidebar
 - Active session reflected in URL query param `?session=<id>`
 - Real-time generation status badge in sidebar (`queued` or `in_progress`)
+- Tree-style session history in sidebar using branch depth indentation and branch markers
+- Branch map entry in header (shown only when active chat is a fork)
+
+## 6.1.1 Chat Branching (Git-like Conversation Versioning)
+
+LoveChat now supports conversation branching for power users who want to explore alternate paths without losing the original thread.
+
+Branching behavior:
+
+- Every message row now exposes a `Fork chat from here` action.
+- Forking creates a new chat session derived from the current one.
+- The new session copies history up to the selected message index (inclusive).
+- The forked session stores lineage metadata pointing to:
+  - parent session ID
+  - source message ID used as branch point
+- New forked sessions open immediately after creation so users can continue from that branch.
+
+UX enhancements for branch cognition and discoverability:
+
+- Discoverability:
+  - In-chat guidance banner introduces branching on active chats.
+  - Header `Branches` entry is placed beside `Share` for quick access.
+  - Header `Branches` entry is conditional: it appears only when the active chat is itself a fork.
+- Visual branch map:
+  - Dedicated branch-map modal renders a real recursive tree of session lineage.
+  - Nodes are clickable to jump directly to that branch session.
+- Node-level branch actions:
+  - Message rows show branch-count affordances when branches exist at that exact fork point.
+  - Users can open a node dialog to switch to sibling branches from that node context.
+- Compare workflow:
+  - Branch continuations can be compared side-by-side from the same fork point.
+  - Compare view supports “Use selected branch response” to seed follow-up continuation in the active branch.
+- Branch labeling and intent:
+  - Fork dialog includes intent chips (for example, alternative, tone, research, debug, custom).
+  - Intent is reflected in derived branch titles unless user overrides with custom title.
+
+History model:
+
+- Session history remains time-grouped (Today / Previous 7 Days / Older) while also carrying tree lineage.
+- Sidebar rows now render branch depth, producing a tree-like visual history.
+- This creates a Git-style mental model:
+  - original conversation path remains intact
+  - branches can diverge and continue independently
 
 ## 6.2 Message Lifecycle
 
@@ -203,6 +247,8 @@ For user messages:
 - Edit and save a past message
 - Regenerate assistant continuation from edited point
 - Copy message text
+- Fork chat from this message
+- If branches exist at this message node: open branch-node actions (switch or compare)
 
 For assistant messages:
 
@@ -211,6 +257,8 @@ For assistant messages:
 - Retry assistant response from prior turn
 - Download generated images
 - Add to memory (manual save trigger for durable memory)
+- Fork chat from this message
+- If branches exist at this message node: open branch-node actions (switch or compare)
 
 ## 6.7 Landing Mode and Prompt Suggestions
 
@@ -454,6 +502,8 @@ Selection intent:
 `chat_conversations`
 
 - `id` (UUID), `user_id`, title, timestamps
+- `parent_conversation_id` (nullable UUID, self-reference to parent conversation)
+- `forked_from_message_id` (nullable BIGINT, references branch-point message)
 
 `chat_messages`
 
@@ -555,16 +605,25 @@ Redis is used for:
 
 - `GET /chat/sessions`
   - Lists sessions + active generation status hints
+  - Includes lineage metadata (`parentSessionId`, `forkedFromMessageId`)
 - `POST /chat/sessions`
   - Creates new session
 - `DELETE /chat/sessions`
   - Deletes all user sessions
 - `GET /chat/sessions/:sessionId`
   - Returns session metadata, message history, optional active generation snapshot
+  - Includes lineage metadata (`parentSessionId`, `forkedFromMessageId`)
+  - Includes stable `messageId` per persisted message row for node-level branch UX
 - `PATCH /chat/sessions/:sessionId`
   - Renames session
 - `DELETE /chat/sessions/:sessionId`
   - Deletes one session
+- `POST /chat/sessions/:sessionId/fork`
+  - Creates a forked session from a source session
+  - Accepts optional `messageIndex` (fork point) and optional `title`
+  - Copies messages from start through fork point into the new session
+  - Returns the created forked session metadata
+  - Used by intent-labeled fork UI where title can be generated from selected branch intent
 
 ### 9.8 Chat Generation
 

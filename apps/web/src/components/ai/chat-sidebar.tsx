@@ -1,4 +1,4 @@
-import { Ellipsis, Loader2, LogOut, MessageCircle, Pencil, Plus, Search, Settings, Trash2 } from 'lucide-react'
+import { Ellipsis, GitBranch, Loader2, LogOut, MessageCircle, Pencil, Plus, Search, Settings, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '#/components/ui/menu'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '#/components/ui/empty'
@@ -8,6 +8,7 @@ type ChatSidebarSession = {
   title: string
   createdAt: string
   updatedAt: string
+  branchDepth?: number
   generationStatus?: 'queued' | 'in_progress' | null
 }
 
@@ -307,6 +308,7 @@ function ChatSidebar({
                       const isActive = session.id === activeSessionId
                       const isGenerating =
                         session.generationStatus === 'queued' || session.generationStatus === 'in_progress'
+                      const branchDepth = Math.max(0, Math.min(session.branchDepth ?? 0, 8))
 
                       return (
                         <li
@@ -339,7 +341,13 @@ function ChatSidebar({
                               onClick={() => void onOpenSession(session.id)}
                               className="flex-1 truncate px-2 py-2 text-left text-[13px] text-gray-700 dark:text-gray-200"
                             >
-                              {session.title}
+                              <span
+                                className="flex items-center gap-1.5"
+                                style={{ paddingLeft: `${branchDepth * 12}px` }}
+                              >
+                                {branchDepth > 0 ? <GitBranch className="size-3.5 shrink-0 text-gray-400" /> : null}
+                                <span className="truncate">{session.title}</span>
+                              </span>
                             </button>
                           )}
 
