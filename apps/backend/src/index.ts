@@ -169,6 +169,17 @@ const renameChatSessionSchema = z.object({
   title: z.string().trim().min(1).max(120),
 })
 
+const memoryEntrySchema = z.object({
+  content: z.string().trim().min(2).max(2_000),
+  source: z.enum(['manual', 'auto']).optional().default('manual'),
+  summarize: z.boolean().optional().default(false),
+  summarizeMode: z.enum(['default', 'assistant_response', 'user_request']).optional().default('default'),
+})
+
+const memoryIdParamSchema = z.object({
+  memoryId: z.string().uuid(),
+})
+
 const urlCitationAnnotationSchema = z.object({
   type: z.literal('url_citation'),
   url: z.string().url().optional(),
@@ -232,6 +243,16 @@ type PersonalizationProfile = {
   headers: CharacteristicLevel
   emojis: CharacteristicLevel
   customInstructions: string
+}
+
+type MemorySource = 'manual' | 'auto'
+
+type UserMemory = {
+  id: string
+  content: string
+  source: MemorySource
+  createdAt: string
+  updatedAt: string
 }
 
 const BASE_STYLE_PROMPTS: Record<BaseStyleTone, string> = {
@@ -410,6 +431,380 @@ function buildPersonalizedSystemPrompt(profile: PersonalizationProfile) {
     profile.customInstructions,
     '"""',
   ].join('\n')
+}
+
+function normalizeMemoryContent(value: string) {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function plainTextForMemory(value: string) {
+  return normalizeMemoryContent(
+    value
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/!\[[^\]]*\]\((?:[^)]+)\)/g, ' ')
+      .replace(/\[[^\]]+\]\((?:[^)]+)\)/g, '$1')
+      .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+      .replace(/^\s*>\s?/gm, '')
+      .replace(/^\s*[-*+]\s+/gm, '')
+      .replace(/^\s*\d+\.\s+/gm, ''),
+  )
+}
+
+function fallbackSummarizeMemoryContent(value: string, maxLength = 240) {
+  const plain = plainTextForMemory(value)
+  if (!plain) {
+    return ''
+  }
+
+  if (plain.length <= maxLength) {
+    return plain
+  }
+
+  const slice = plain.slice(0, maxLength)
+  const boundary = Math.max(slice.lastIndexOf('. '), slice.lastIndexOf('! '), slice.lastIndexOf('? '))
+  if (boundary >= 48) {
+    return slice.slice(0, boundary + 1).trim()
+  }
+
+  return slice.trim()
+}
+
+function cleanupMemorySummary(value: string) {
+  let cleaned = normalizeMemoryContent(value)
+
+  // Remove common assistant lead-ins so memory doesn't look like a chat reply.
+  cleaned = cleaned
+    .replace(/^(?:certainly|sure|of course|absolutely|definitely)\b[,:.!\s-]*/i, '')
+    .replace(/^(?:here(?:'s| is)|below is|this is)\b[,:.!\s-]*/i, '')
+    .replace(/^(?:you can|i can|i will|we can)\b[,:.!\s-]*/i, '')
+    .trim()
+
+  return cleaned
+}
+
+function toDurableMemory(value: string, maxLength = 240) {
+  const cleaned = cleanupMemorySummary(value)
+  if (!cleaned) {
+    return ''
+  }
+
+  const dePrefixed = cleaned
+    .replace(/^user\s+requested\s*:\s*/i, '')
+    .replace(/^user\s+asked\s*:\s*/i, '')
+    .replace(/^request\s*:\s*/i, '')
+    .trim()
+
+  if (!dePrefixed) {
+    return ''
+  }
+
+  if (
+    /^(?:interested in|prefers|working on|goal:\s*|needs\s+|uses\s+|studies\s+|is\s+a\s+|identifies as\s+)/i.test(
+      dePrefixed,
+    )
+  ) {
+    return dePrefixed.slice(0, maxLength).trim()
+  }
+
+  if (/^i\b/i.test(dePrefixed) || /^my\b/i.test(dePrefixed)) {
+    return dePrefixed.slice(0, maxLength).trim()
+  }
+
+  const lowerFirst = `${dePrefixed.charAt(0).toLowerCase()}${dePrefixed.slice(1)}`
+  const prefixed = `Interested in ${lowerFirst}`
+  return prefixed.slice(0, maxLength).trim()
+}
+
+async function summarizeMemoryContent(value: string, mode: 'default' | 'assistant_response' | 'user_request' = 'default') {
+  const maxLength = mode === 'default' ? 240 : 140
+  const fallback = fallbackSummarizeMemoryContent(value, maxLength)
+  if (!openaiClient) {
+    return mode === 'default' ? cleanupMemorySummary(fallback) : toDurableMemory(fallback, maxLength)
+  }
+
+  try {
+    const instruction =
+      mode === 'assistant_response'
+        ? 'Convert this assistant response into ONE concise durable memory about the user. Output plain text only as a stable preference/fact/goal. Prefer forms like "Interested in ...", "Prefers ...", "Working on ...", or "I ...". Never use "User requested". Do not include helper phrases like "Certainly". Hard limit: 140 characters.'
+        : mode === 'user_request'
+          ? 'Convert this user request into ONE concise durable memory. Capture the underlying recurring preference/interest/goal, not a full task sentence. Output plain text only. Prefer forms like "Interested in ...", "Prefers ...", "Working on ...", or "I ...". Never use "User requested". Hard limit: 140 characters.'
+        : 'Summarize the user content into ONE concise long-term memory statement. Keep it factual and specific. Use plain text only. Do not include bullets, markdown, preambles, or quotes. Prefer first-person phrasing if the content is about the user. Hard limit: 240 characters.'
+
+    const response = await openaiClient.responses.create({
+      model: 'gpt-5-nano',
+      max_output_tokens: 120,
+      input: [
+        {
+          role: 'system',
+          content: instruction,
+        },
+        {
+          role: 'user',
+          content: plainTextForMemory(value),
+        },
+      ],
+    })
+
+    const responseRecord = response as {
+      output?: unknown
+      output_text?: string
+    }
+
+    const extracted = extractTextAndCitations(responseRecord.output, responseRecord)
+    const raw = extracted.text || (typeof responseRecord.output_text === 'string' ? responseRecord.output_text : '')
+    const summarized = fallbackSummarizeMemoryContent(raw, maxLength)
+
+    if (mode !== 'default') {
+      const durable = toDurableMemory(summarized || fallback, maxLength)
+      return durable || toDurableMemory(fallback, maxLength)
+    }
+
+    const cleaned = cleanupMemorySummary(summarized || fallback)
+    return cleaned || cleanupMemorySummary(fallback)
+  } catch (error) {
+    app.log.warn({ error }, 'memory summarization failed; using fallback summarization')
+
+    if (mode !== 'default') {
+      return toDurableMemory(fallback, maxLength)
+    }
+
+    return cleanupMemorySummary(fallback)
+  }
+}
+
+function normalizeMemoryContentForLookup(value: string) {
+  return normalizeMemoryContent(value).toLowerCase()
+}
+
+function splitMemoryCandidateSentences(input: string) {
+  return input
+    .split(/[\n.!?]+/)
+    .map((part) => normalizeMemoryContent(part))
+    .filter(Boolean)
+}
+
+function isLikelyMemoryCandidate(sentence: string) {
+  if (sentence.length < 8 || sentence.length > 220) {
+    return false
+  }
+
+  if (sentence.endsWith('?')) {
+    return false
+  }
+
+  const normalized = sentence.toLowerCase()
+
+  return /^(?:remember\s+(?:that\s+)?)?(?:i am|i'm|i was|i work|i study|i live|my name is|my pronouns are|i prefer|i like|i dislike|i hate|i use|my goal is|i want|i need)\b/.test(
+    normalized,
+  )
+}
+
+function extractAutoMemoryCandidates(content: string) {
+  const candidates = splitMemoryCandidateSentences(content)
+    .map((sentence) =>
+      sentence.replace(/^remember\s+(?:that\s+)?/i, '').replace(/^please\s+/, '').trim(),
+    )
+    .filter((sentence) => isLikelyMemoryCandidate(sentence))
+
+  const deduped = new Map<string, string>()
+  for (const candidate of candidates) {
+    const key = normalizeMemoryContentForLookup(candidate)
+    if (!deduped.has(key)) {
+      deduped.set(key, candidate)
+    }
+  }
+
+  return Array.from(deduped.values()).slice(0, 4)
+}
+
+function parseJsonArrayFromText(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed)
+    return Array.isArray(parsed) ? parsed : null
+  } catch {
+    // Try to recover when model wraps the array in prose or code fences.
+    const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
+    if (fenceMatch?.[1]) {
+      try {
+        const parsed = JSON.parse(fenceMatch[1].trim())
+        return Array.isArray(parsed) ? parsed : null
+      } catch {
+        // Fall through.
+      }
+    }
+
+    const firstBracket = trimmed.indexOf('[')
+    const lastBracket = trimmed.lastIndexOf(']')
+    if (firstBracket >= 0 && lastBracket > firstBracket) {
+      const slice = trimmed.slice(firstBracket, lastBracket + 1)
+      try {
+        const parsed = JSON.parse(slice)
+        return Array.isArray(parsed) ? parsed : null
+      } catch {
+        return null
+      }
+    }
+
+    return null
+  }
+}
+
+async function inferAutoMemoryCandidates(content: string) {
+  const normalized = plainTextForMemory(content)
+  if (!normalized || normalized.length < 12) {
+    return [] as string[]
+  }
+
+  const heuristicCandidates = extractAutoMemoryCandidates(normalized)
+
+  if (!openaiClient) {
+    return heuristicCandidates
+  }
+
+  let aiCandidates: string[] = []
+
+  try {
+    const response = await openaiClient.responses.create({
+      model: 'gpt-5-nano',
+      max_output_tokens: 220,
+      input: [
+        {
+          role: 'system',
+          content:
+            'You extract long-term user memories from ONE user message. Return ONLY a JSON array of strings with 0 to 3 items. Include only durable personal preferences, identity facts, ongoing goals, or recurring constraints. Exclude one-off tasks, temporary requests, and answer content. Keep each item concise (<=120 chars).',
+        },
+        {
+          role: 'user',
+          content: normalized,
+        },
+      ],
+    })
+
+    const responseRecord = response as {
+      output?: unknown
+      output_text?: string
+    }
+    const extracted = extractTextAndCitations(responseRecord.output, responseRecord)
+    const raw = extracted.text || (typeof responseRecord.output_text === 'string' ? responseRecord.output_text : '')
+
+    const parsed = parseJsonArrayFromText(raw)
+    if (parsed) {
+      aiCandidates = parsed
+        .map((item) => (typeof item === 'string' ? normalizeMemoryContent(item) : ''))
+        .filter((item) => item.length >= 8 && item.length <= 160)
+    }
+  } catch (error) {
+    app.log.warn({ error }, 'auto memory inference failed; falling back to heuristics')
+  }
+
+  const combined = [...aiCandidates, ...heuristicCandidates]
+  const deduped = new Map<string, string>()
+  for (const candidate of combined) {
+    const cleaned = normalizeMemoryContent(candidate)
+    if (!cleaned) {
+      continue
+    }
+
+    const key = normalizeMemoryContentForLookup(cleaned)
+    if (!deduped.has(key)) {
+      deduped.set(key, cleaned)
+    }
+  }
+
+  return Array.from(deduped.values()).slice(0, 3)
+}
+
+function buildMemoryPrompt(memories: UserMemory[]) {
+  if (memories.length === 0) {
+    return ''
+  }
+
+  const lines = memories.map((memory, index) => `${index + 1}. ${memory.content}`)
+  return ['# LONG-TERM USER MEMORY', 'Use these as durable user facts/preferences when relevant:', ...lines].join(
+    '\n',
+  )
+}
+
+async function loadUserMemories(userId: number, limit = 40): Promise<UserMemory[]> {
+  const result = await pgPool.query<{
+    id: string
+    content: string
+    source: MemorySource
+    created_at: string
+    updated_at: string
+  }>(
+    `
+    SELECT id, content, source, created_at, updated_at
+    FROM user_memories
+    WHERE user_id = $1
+    ORDER BY updated_at DESC
+    LIMIT $2
+    `,
+    [userId, limit],
+  )
+
+  return result.rows.map((row) => ({
+    id: row.id,
+    content: row.content,
+    source: row.source,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }))
+}
+
+async function upsertUserMemory(userId: number, content: string, source: MemorySource) {
+  const normalizedContent = normalizeMemoryContent(content)
+  const normalizedLookup = normalizeMemoryContentForLookup(normalizedContent)
+
+  const result = await pgPool.query<{
+    id: string
+    content: string
+    source: MemorySource
+    created_at: string
+    updated_at: string
+  }>(
+    `
+    INSERT INTO user_memories (id, user_id, content, content_normalized, source, last_used_at)
+    VALUES ($1, $2, $3, $4, $5, NOW())
+    ON CONFLICT (user_id, content_normalized)
+    DO UPDATE SET
+      content = EXCLUDED.content,
+      source = CASE
+        WHEN user_memories.source = 'manual' THEN 'manual'
+        ELSE EXCLUDED.source
+      END,
+      last_used_at = NOW(),
+      updated_at = NOW()
+    RETURNING id, content, source, created_at, updated_at
+    `,
+    [randomUUID(), userId, normalizedContent, normalizedLookup, source],
+  )
+
+  const row = result.rows[0]
+  return {
+    id: row.id,
+    content: row.content,
+    source: row.source,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+async function upsertUserMemories(userId: number, candidates: string[], source: MemorySource) {
+  for (const candidate of candidates) {
+    const normalized = normalizeMemoryContent(candidate)
+    if (!normalized) {
+      continue
+    }
+
+    await upsertUserMemory(userId, normalized, source)
+  }
 }
 
 function shouldUseWebSearch(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>) {
@@ -1093,12 +1488,21 @@ function buildCompletionInput(
   activateWebSearch: boolean,
   activateLearningMode: boolean,
   personalizedSystemPrompt: string,
+  memoryPrompt: string,
 ) {
   return [
     {
       role: 'system' as const,
       content: personalizedSystemPrompt,
     },
+    ...(memoryPrompt
+      ? [
+          {
+            role: 'system' as const,
+            content: memoryPrompt,
+          },
+        ]
+      : []),
     {
       role: 'system' as const,
       content: visualizationSystemPrompt,
@@ -1173,8 +1577,27 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
       ]
     : undefined
 
+  const lastUserMessage = [...payload.messages].reverse().find((message) => message.role === 'user')
+  const autoCandidates = await inferAutoMemoryCandidates(lastUserMessage?.content ?? '')
+  if (autoCandidates.length > 0) {
+    try {
+      await upsertUserMemories(payload.userId, autoCandidates, 'auto')
+    } catch (memoryError) {
+      app.log.warn(
+        {
+          generationId: payload.generationId,
+          userId: payload.userId,
+          error: memoryError,
+        },
+        'unable to persist auto-detected user memories',
+      )
+    }
+  }
+
   const personalizationProfile = await loadPersonalizationProfile(payload.userId)
+  const userMemories = await loadUserMemories(payload.userId)
   const personalizedSystemPrompt = buildPersonalizedSystemPrompt(personalizationProfile)
+  const memoryPrompt = buildMemoryPrompt(userMemories)
 
   const completionRequest = {
     model: payload.model,
@@ -1184,6 +1607,7 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
       payload.activateWebSearch,
       payload.activateLearningMode,
       personalizedSystemPrompt,
+      memoryPrompt,
     ),
   }
 
@@ -2047,6 +2471,22 @@ app.get('/account/export', async (request, reply) => {
       [session.userId],
     )
 
+    const memoriesResult = await pgPool.query<{
+      id: string
+      content: string
+      source: MemorySource
+      created_at: string
+      updated_at: string
+    }>(
+      `
+      SELECT id, content, source, created_at, updated_at
+      FROM user_memories
+      WHERE user_id = $1
+      ORDER BY updated_at DESC
+      `,
+      [session.userId],
+    )
+
     const profile = profileResult.rows[0]
     if (!profile) {
       return reply.code(404).send({
@@ -2091,6 +2531,13 @@ app.get('/account/export', async (request, reply) => {
         searchedWeb: message.searched_web,
         thinking: message.thinking_text,
         createdAt: message.created_at,
+      })),
+      memories: memoriesResult.rows.map((memory) => ({
+        id: memory.id,
+        content: memory.content,
+        source: memory.source,
+        createdAt: memory.created_at,
+        updatedAt: memory.updated_at,
       })),
     })
   } catch (error) {
@@ -2265,6 +2712,169 @@ app.get('/onboarding/profile', async (request, reply) => {
     request.log.error(error)
     return reply.code(500).send({
       message: 'Unable to load onboarding profile',
+    })
+  }
+})
+
+app.get('/memory', async (request, reply) => {
+  try {
+    const session = await getSessionFromRequest(request)
+    if (!session) {
+      return reply.code(401).send({
+        message: 'Unauthorized',
+      })
+    }
+
+    const memories = await loadUserMemories(session.userId)
+    return reply.send({ memories })
+  } catch (error) {
+    request.log.error(error)
+    return reply.code(500).send({
+      message: 'Unable to load memories',
+    })
+  }
+})
+
+app.post('/memory', async (request, reply) => {
+  try {
+    const session = await getSessionFromRequest(request)
+    if (!session) {
+      return reply.code(401).send({
+        message: 'Unauthorized',
+      })
+    }
+
+    const body = memoryEntrySchema.parse(request.body)
+    const contentToStore = body.summarize
+      ? await summarizeMemoryContent(body.content, body.summarizeMode)
+      : body.content
+
+    const memory = await upsertUserMemory(session.userId, contentToStore || body.content, body.source)
+    return reply.code(201).send({ memory })
+  } catch (error) {
+    if (error instanceof ZodError) {
+      return reply.code(400).send({
+        message: 'Invalid memory payload',
+        issues: error.issues,
+      })
+    }
+
+    request.log.error(error)
+    return reply.code(500).send({
+      message: 'Unable to save memory',
+    })
+  }
+})
+
+app.patch('/memory/:memoryId', async (request, reply) => {
+  try {
+    const session = await getSessionFromRequest(request)
+    if (!session) {
+      return reply.code(401).send({
+        message: 'Unauthorized',
+      })
+    }
+
+    const { memoryId } = memoryIdParamSchema.parse(request.params)
+    const body = memoryEntrySchema.parse(request.body)
+    const normalizedContent = normalizeMemoryContent(body.content)
+    const normalizedLookup = normalizeMemoryContentForLookup(normalizedContent)
+
+    const result = await pgPool.query<{
+      id: string
+      content: string
+      source: MemorySource
+      created_at: string
+      updated_at: string
+    }>(
+      `
+      UPDATE user_memories
+      SET
+        content = $3,
+        content_normalized = $4,
+        source = 'manual',
+        updated_at = NOW()
+      WHERE id = $1 AND user_id = $2
+      RETURNING id, content, source, created_at, updated_at
+      `,
+      [memoryId, session.userId, normalizedContent, normalizedLookup],
+    )
+
+    const updated = result.rows[0]
+    if (!updated) {
+      return reply.code(404).send({
+        message: 'Memory not found',
+      })
+    }
+
+    return reply.send({
+      memory: {
+        id: updated.id,
+        content: updated.content,
+        source: updated.source,
+        createdAt: updated.created_at,
+        updatedAt: updated.updated_at,
+      },
+    })
+  } catch (error) {
+    if (error instanceof ZodError) {
+      return reply.code(400).send({
+        message: 'Invalid memory payload',
+        issues: error.issues,
+      })
+    }
+
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === '23505') {
+      return reply.code(409).send({
+        message: 'That memory already exists',
+      })
+    }
+
+    request.log.error(error)
+    return reply.code(500).send({
+      message: 'Unable to update memory',
+    })
+  }
+})
+
+app.delete('/memory/:memoryId', async (request, reply) => {
+  try {
+    const session = await getSessionFromRequest(request)
+    if (!session) {
+      return reply.code(401).send({
+        message: 'Unauthorized',
+      })
+    }
+
+    const { memoryId } = memoryIdParamSchema.parse(request.params)
+
+    const result = await pgPool.query<{ id: string }>(
+      `
+      DELETE FROM user_memories
+      WHERE id = $1 AND user_id = $2
+      RETURNING id
+      `,
+      [memoryId, session.userId],
+    )
+
+    if (!result.rows[0]) {
+      return reply.code(404).send({
+        message: 'Memory not found',
+      })
+    }
+
+    return reply.code(204).send()
+  } catch (error) {
+    if (error instanceof ZodError) {
+      return reply.code(400).send({
+        message: 'Invalid memory id',
+        issues: error.issues,
+      })
+    }
+
+    request.log.error(error)
+    return reply.code(500).send({
+      message: 'Unable to delete memory',
     })
   }
 })

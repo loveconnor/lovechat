@@ -51,6 +51,22 @@ type DataControlsResponse = {
   }
 }
 
+type UserMemory = {
+  id: string
+  content: string
+  source: 'manual' | 'auto'
+  createdAt: string
+  updatedAt: string
+}
+
+type MemoriesResponse = {
+  memories: UserMemory[]
+}
+
+type MemoryResponse = {
+  memory: UserMemory
+}
+
 const TAB_LABELS: Record<SettingsTab, string> = {
   general: 'General',
   personalization: 'Personalization',
@@ -244,6 +260,13 @@ function SettingsDialog({
   const [isDeleteAccountDialogOpen, setIsDeleteAccountDialogOpen] = useState(false)
   const [dataError, setDataError] = useState<string | null>(null)
   const [dataMessage, setDataMessage] = useState<string | null>(null)
+  const [memories, setMemories] = useState<UserMemory[]>([])
+  const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null)
+  const [editingMemoryDraft, setEditingMemoryDraft] = useState('')
+  const [isMemoryLoading, setIsMemoryLoading] = useState(false)
+  const [isMemorySaving, setIsMemorySaving] = useState(false)
+  const [memoryError, setMemoryError] = useState<string | null>(null)
+  const [memoryMessage, setMemoryMessage] = useState<string | null>(null)
   const [modelSettings, setModelSettings] = useState<ModelSettings>(createDefaultModelSettings)
   const [isFetchingOllamaModels, setIsFetchingOllamaModels] = useState(false)
   const [modelError, setModelError] = useState<string | null>(null)
@@ -276,6 +299,11 @@ function SettingsDialog({
     setChatHistoryEnabled(true)
     setDataError(null)
     setDataMessage(null)
+    setMemories([])
+    setEditingMemoryId(null)
+    setEditingMemoryDraft('')
+    setMemoryError(null)
+    setMemoryMessage(null)
     setProfileError(null)
     setSaveMessage(null)
     setTheme(getInitialTheme())
@@ -292,6 +320,7 @@ function SettingsDialog({
     let cancelled = false
     setIsProfileLoading(true)
     setIsDataControlsLoading(true)
+    setIsMemoryLoading(true)
 
     async function loadProfile() {
       try {
@@ -395,8 +424,54 @@ function SettingsDialog({
       }
     }
 
+    async function loadMemories() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/memory`, {
+          headers: {
+            Authorization: `Bearer ${sessionToken}`,
+          },
+        })
+
+        if (!response.ok) {
+          let message = 'Unable to load memory.'
+          try {
+            const payload = (await response.json()) as { message?: string }
+            if (payload.message) {
+              message = payload.message
+            }
+          } catch {
+            // Keep fallback message.
+          }
+
+          if (!cancelled) {
+            setMemoryError(message)
+          }
+          return
+        }
+
+        const payload = (await response.json()) as MemoriesResponse
+        if (cancelled) {
+          return
+        }
+
+        const sorted = [...(payload.memories ?? [])].sort(
+          (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
+        )
+        setMemories(sorted)
+      } catch {
+        if (!cancelled) {
+          setMemoryError('Unable to reach the backend. Check that the API is running.')
+        }
+      } finally {
+        if (!cancelled) {
+          setIsMemoryLoading(false)
+        }
+      }
+    }
+
     void loadProfile()
     void loadDataControls()
+    void loadMemories()
 
     return () => {
       cancelled = true
@@ -704,6 +779,100 @@ function SettingsDialog({
       setDataError('Unable to reach the backend. Check that the API is running.')
     } finally {
       setIsDeletingAccount(false)
+    }
+  }
+
+  async function handleUpdateMemory(memoryId: string) {
+    const sessionToken = window.localStorage.getItem('lovechat_session_token')
+    if (!sessionToken) {
+      setMemoryError('Your session has expired. Please sign in again.')
+      setMemoryMessage(null)
+      return
+    }
+
+    const content = editingMemoryDraft.trim()
+    if (!content) {
+      return
+    }
+
+    setIsMemorySaving(true)
+    setMemoryError(null)
+    setMemoryMessage(null)
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/memory/${memoryId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionToken}`,
+        },
+        body: JSON.stringify({ content }),
+      })
+
+      const payload = (await response.json()) as MemoryResponse & { message?: string }
+      if (!response.ok) {
+        setMemoryError(payload.message ?? 'Unable to update memory.')
+        return
+      }
+
+      const next = memories.map((memory) => (memory.id === payload.memory.id ? payload.memory : memory))
+      next.sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
+      setMemories(next)
+      setEditingMemoryId(null)
+      setEditingMemoryDraft('')
+      setMemoryMessage('Memory updated.')
+    } catch {
+      setMemoryError('Unable to reach the backend. Check that the API is running.')
+    } finally {
+      setIsMemorySaving(false)
+    }
+  }
+
+  async function handleDeleteMemory(memoryId: string) {
+    const sessionToken = window.localStorage.getItem('lovechat_session_token')
+    if (!sessionToken) {
+      setMemoryError('Your session has expired. Please sign in again.')
+      setMemoryMessage(null)
+      return
+    }
+
+    setIsMemorySaving(true)
+    setMemoryError(null)
+    setMemoryMessage(null)
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/memory/${memoryId}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${sessionToken}`,
+        },
+      })
+
+      if (!response.ok && response.status !== 404) {
+        let message = 'Unable to delete memory.'
+        try {
+          const payload = (await response.json()) as { message?: string }
+          if (payload.message) {
+            message = payload.message
+          }
+        } catch {
+          // Keep fallback message.
+        }
+
+        setMemoryError(message)
+        return
+      }
+
+      setMemories((previous) => previous.filter((memory) => memory.id !== memoryId))
+      if (editingMemoryId === memoryId) {
+        setEditingMemoryId(null)
+        setEditingMemoryDraft('')
+      }
+      setMemoryMessage('Memory deleted.')
+    } catch {
+      setMemoryError('Unable to reach the backend. Check that the API is running.')
+    } finally {
+      setIsMemorySaving(false)
     }
   }
 
@@ -1240,6 +1409,108 @@ function SettingsDialog({
 
                 <div className="h-px w-full bg-[#E5E5E5] dark:bg-gray-700" />
 
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <div className="text-[15px] font-semibold text-gray-900 dark:text-gray-100">Memory</div>
+                    <div className="mt-0.5 text-[13px] text-gray-500 dark:text-gray-400">
+                      Review and edit long-term facts and preferences used across future chats.
+                    </div>
+                  </div>
+
+                  {isMemoryLoading ? (
+                    <p className="text-[12px] text-gray-500 dark:text-gray-400">Loading memory...</p>
+                  ) : memories.length === 0 ? (
+                    <p className="text-[12px] text-gray-500 dark:text-gray-400">No saved memory yet.</p>
+                  ) : (
+                    <div className="max-h-52 space-y-2 overflow-y-auto pr-1">
+                      {memories.map((memory) => {
+                        const isEditing = editingMemoryId === memory.id
+
+                        return (
+                          <div
+                            key={memory.id}
+                            className="rounded-xl border border-[#E5E5E5] bg-white p-3 dark:border-gray-700 dark:bg-[#2a2a2a]"
+                          >
+                            {isEditing ? (
+                              <>
+                                <textarea
+                                  rows={2}
+                                  value={editingMemoryDraft}
+                                  onChange={(event) => setEditingMemoryDraft(event.target.value)}
+                                  disabled={isMemorySaving || isDeletingAccount}
+                                  className="lovechat-accent-focus w-full resize-none rounded-[10px] border border-[#E5E5E5] bg-[#F9FAFB] p-2.5 text-[13px] text-gray-900 outline-none transition-all disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-[#1a1a1a] dark:text-gray-100"
+                                />
+                                <div className="mt-2 flex items-center justify-between">
+                                  <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                                    Source: {memory.source === 'manual' ? 'Manual' : 'Auto-detected'}
+                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingMemoryId(null)
+                                        setEditingMemoryDraft('')
+                                      }}
+                                      disabled={isMemorySaving || isDeletingAccount}
+                                      className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-[#3a3a3a]"
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        void handleUpdateMemory(memory.id)
+                                      }}
+                                      disabled={isMemorySaving || isDeletingAccount || editingMemoryDraft.trim().length === 0}
+                                      className="rounded-md border border-[#E5E5E5] bg-white px-2 py-1 text-[12px] font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-[#3f3f3f] dark:text-gray-200 dark:hover:bg-[#4a4a4a]"
+                                    >
+                                      Save
+                                    </button>
+                                  </div>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <p className="text-[13px] leading-relaxed text-gray-800 dark:text-gray-100">{memory.content}</p>
+                                <div className="mt-2 flex items-center justify-between">
+                                  <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                                    {memory.source === 'manual' ? 'Manual' : 'Auto-detected'}
+                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingMemoryId(memory.id)
+                                        setEditingMemoryDraft(memory.content)
+                                      }}
+                                      disabled={isMemorySaving || isDeletingAccount}
+                                      className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-[#3a3a3a]"
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        void handleDeleteMemory(memory.id)
+                                      }}
+                                      disabled={isMemorySaving || isDeletingAccount}
+                                      className="rounded-md px-2 py-1 text-[12px] font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30"
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="h-px w-full bg-[#E5E5E5] dark:bg-gray-700" />
+
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <div className="text-[15px] font-semibold text-gray-900 dark:text-gray-100">Export Data</div>
@@ -1300,6 +1571,12 @@ function SettingsDialog({
                 ) : null}
                 {dataMessage ? (
                   <p className="text-right text-[12px] text-emerald-600 dark:text-emerald-400">{dataMessage}</p>
+                ) : null}
+                {memoryError ? (
+                  <p className="text-right text-[12px] text-red-600 dark:text-red-400">{memoryError}</p>
+                ) : null}
+                {memoryMessage ? (
+                  <p className="text-right text-[12px] text-emerald-600 dark:text-emerald-400">{memoryMessage}</p>
                 ) : null}
               </div>
             </div>

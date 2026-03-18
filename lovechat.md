@@ -210,6 +210,7 @@ For assistant messages:
 - If response is image-only, attempt copy-to-clipboard image behavior
 - Retry assistant response from prior turn
 - Download generated images
+- Add to memory (manual save trigger for durable memory)
 
 ## 6.7 Landing Mode and Prompt Suggestions
 
@@ -246,6 +247,36 @@ PDF export builds a print-friendly HTML document with:
 - preserved markdown rendering
 - imported runtime styles (including KaTeX styles)
 - assistant/user message sections
+
+## 6.9 Memory Capture and Management
+
+LoveChat now includes a long-term memory subsystem that combines manual and automatic capture.
+
+Manual capture flow:
+
+- Triggered from assistant message actions via Add to memory
+- Frontend sends memory-save request with summarize mode enabled
+- Backend summarizes into short durable memory text before storage
+
+Automatic capture flow:
+
+- During generation, backend evaluates the latest user message
+- Heuristic extraction plus AI extraction identify durable memory candidates
+- Candidates are deduplicated, normalized, and stored as auto memory entries
+
+Memory management UX:
+
+- Memory is managed in Settings -> Data Controls
+- Users can review, edit, and delete existing memory entries
+- Direct memory creation in Settings is intentionally disabled
+- Memory entries show source labels (manual or auto-detected)
+
+Memory quality rules (current behavior):
+
+- One-off task phrasing is compressed toward durable preference/fact wording
+- Assistant lead-ins (for example, Certainly / Here is) are stripped
+- Summaries are length-bounded for context-size and cost control
+- Memory dedupe is case-insensitive and whitespace-normalized
 
 ## 7. AI Orchestration and Model Behavior
 
@@ -285,6 +316,7 @@ Image path:
 Completion input can include multiple layered system prompts:
 
 - Personalized prompt built from user profile and tone settings
+- Long-term memory prompt built from stored user memories
 - Visualization instruction prompt (forces chart packet format for analytical requests)
 - Learning mode tutoring prompt (if enabled)
 - Web search grounding prompt (if enabled)
@@ -326,6 +358,24 @@ Frontend parser:
 - renders charts via `ChartCard`
 - keeps non-chart markdown text alongside charts
 
+## 7.7 Automatic Memory Inference
+
+Automatic memory inference currently runs per generation against the latest user message.
+
+Pipeline:
+
+1. Normalize latest user message to plain text.
+2. Run heuristic memory candidate extraction.
+3. Run AI memory extraction (small model) for durable memory candidates.
+4. Parse and validate candidate strings.
+5. Deduplicate candidates and cap count.
+6. Upsert candidates to `user_memories` with source `auto`.
+
+Selection intent:
+
+- Include durable identity facts, preferences, recurring constraints, and ongoing goals.
+- Exclude temporary one-off asks whenever possible.
+
 ## 8. Data Model and Persistence
 
 ## 8.1 Database Tables
@@ -364,6 +414,14 @@ Frontend parser:
 - request metadata (model, flags, input messages)
 - response state (text, citations, search flag, thinking, error)
 - completion timestamps
+
+`user_memories`
+
+- `id` (UUID), `user_id`
+- `content` (stored durable memory text)
+- `content_normalized` (dedupe key)
+- `source` (`manual` or `auto`)
+- `created_at`, `updated_at`, `last_used_at`
 
 ## 8.2 Chat History Control
 
@@ -413,7 +471,7 @@ Redis is used for:
 ### 9.5 Data Export and Account Deletion
 
 - `GET /account/export`
-  - Returns structured export payload with account/profile/sessions/messages
+  - Returns structured export payload with account/profile/sessions/messages/memories
 - `DELETE /account`
   - Deletes user and dependent data, invalidates session token
 
@@ -447,6 +505,18 @@ Redis is used for:
   - Returns generation ID + status + resolved session metadata
 - `GET /chat/generations/:generationId`
   - Poll endpoint for generation progress/final output/errors
+
+### 9.9 Memory
+
+- `GET /memory`
+  - Returns current long-term memory entries
+- `POST /memory`
+  - Creates or upserts memory entry
+  - Supports optional summarize flags/modes for compressed durable memory storage
+- `PATCH /memory/:memoryId`
+  - Updates memory content
+- `DELETE /memory/:memoryId`
+  - Deletes memory entry
 
 ## 10. Personalization and UX Configuration
 

@@ -1,5 +1,6 @@
 import { useNavigate } from '@tanstack/react-router'
 import {
+  BookMarked,
   Check,
   ChevronDown,
   Copy,
@@ -146,6 +147,7 @@ const imageGenerationKeywordPattern =
 const assistantRequestTimeoutMs = 45_000
 const defaultThinkingText = 'LoveChat is thinking...'
 const thinkingRevealDelayMs = 1200
+const manualMemoryContentLimit = 2_000
 const mobileLayoutMediaQuery = '(max-width: 767px)'
 const attachmentTextContentLimit = 20_000
 const attachmentImageDataUrlLimit = 6_000_000
@@ -693,6 +695,21 @@ function getAssistantCopyContent(content: string) {
   return parsed.markdown.trim()
 }
 
+function normalizeMemoryContent(content: string, maxLength = manualMemoryContentLimit) {
+  const collapsed = content.replace(/\s+/g, ' ').trim()
+  if (collapsed.length <= maxLength) {
+    return collapsed
+  }
+
+  const slice = collapsed.slice(0, maxLength)
+  const sentenceBoundary = Math.max(slice.lastIndexOf('. '), slice.lastIndexOf('! '), slice.lastIndexOf('? '))
+  if (sentenceBoundary >= 32) {
+    return slice.slice(0, sentenceBoundary + 1).trim()
+  }
+
+  return slice.trim()
+}
+
 function getAssistantExportContent(content: string) {
   const parsed = getAssistantRenderableContent(content)
   const chartSummaries = parsed.charts.map((chart) => `Chart: ${chart.title} (${chart.chartType})`)
@@ -740,11 +757,14 @@ async function extractPdfText(file: File) {
 
     try {
       const loadingTask = pdfjs.getDocument({ data: fileBuffer })
-      document = await loadingTask.promise
+      document = (await loadingTask.promise) as unknown as typeof document
     } catch {
       // Fallback for environments where worker setup fails unexpectedly.
-      const loadingTask = pdfjs.getDocument({ data: fileBuffer, disableWorker: true })
-      document = await loadingTask.promise
+      const loadingTask = pdfjs.getDocument({
+        data: fileBuffer,
+        disableWorker: true,
+      } as unknown as Parameters<typeof pdfjs.getDocument>[0])
+      document = (await loadingTask.promise) as unknown as typeof document
     }
 
     const pageCount = Math.min(document.numPages, 20)
@@ -924,10 +944,12 @@ function ChatLanding() {
   const [landingGreeting, setLandingGreeting] = useState<LandingGreeting>(initialLandingGreeting)
   const [showAllMobileSuggestions, setShowAllMobileSuggestions] = useState(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  const [recentlyRememberedMessageId, setRecentlyRememberedMessageId] = useState<string | null>(null)
   const messageListRef = useRef<HTMLDivElement | null>(null)
   const renameInputRef = useRef<HTMLInputElement | null>(null)
   const copyTimeoutRef = useRef<number | null>(null)
   const thinkingTimeoutRef = useRef<number | null>(null)
+  const rememberedTimeoutRef = useRef<number | null>(null)
   const assistantRequestAbortRef = useRef<AbortController | null>(null)
   const generationPollTimeoutRef = useRef<number | null>(null)
   const attachmentPreviewDataUrlsRef = useRef<Record<string, string>>({})
@@ -1075,6 +1097,89 @@ function ChatLanding() {
 
   function getSessionToken() {
     return window.localStorage.getItem('lovechat_session_token')
+  }
+
+  async function saveMemory(content: string, summarizeMode: 'default' | 'assistant_response' | 'user_request' = 'assistant_response') {
+    const token = getSessionToken()
+    if (!token) {
+      setErrorMessage('Your session has expired. Please sign in again.')
+      return false
+    }
+
+    const normalizedContent = normalizeMemoryContent(content)
+    if (!normalizedContent) {
+      setErrorMessage('Nothing to save from this response.')
+      return false
+    }
+
+    setErrorMessage(null)
+
+    const response = await fetch(`${apiBaseUrl}/memory`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        content: normalizedContent,
+        source: 'manual',
+        summarize: true,
+        summarizeMode,
+      }),
+    })
+
+    if (!response.ok) {
+      let message = 'Unable to save memory'
+      try {
+        const payload = (await response.json()) as { message?: string }
+        if (payload.message) {
+          message = payload.message
+        }
+      } catch {
+        // Keep fallback message.
+      }
+
+      setErrorMessage(message)
+      return false
+    }
+
+    return true
+  }
+
+  async function handleRememberAssistantMessage(message: ChatMessage) {
+    if (message.role !== 'assistant') {
+      return
+    }
+
+    const assistantIndex = messages.findIndex((candidate) => candidate.id === message.id)
+    const previousUserMessage =
+      assistantIndex > 0
+        ? [...messages.slice(0, assistantIndex)].reverse().find((candidate) => candidate.role === 'user')
+        : null
+
+    const memoryContent =
+      previousUserMessage?.content || getAssistantCopyContent(message.content) || getAssistantExportContent(message.content)
+    if (!memoryContent.trim()) {
+      setErrorMessage('Nothing to save from this response.')
+      return
+    }
+
+    const didSave = await saveMemory(
+      memoryContent,
+      previousUserMessage ? 'user_request' : 'assistant_response',
+    )
+    if (!didSave) {
+      return
+    }
+
+    setRecentlyRememberedMessageId(message.id)
+    if (rememberedTimeoutRef.current !== null) {
+      window.clearTimeout(rememberedTimeoutRef.current)
+    }
+
+    rememberedTimeoutRef.current = window.setTimeout(() => {
+      setRecentlyRememberedMessageId(null)
+    }, 1800)
   }
 
   function sortSessionsByUpdatedAt(list: ChatSessionSummary[]) {
@@ -1845,6 +1950,10 @@ function ChatLanding() {
 
       if (thinkingTimeoutRef.current !== null) {
         window.clearTimeout(thinkingTimeoutRef.current)
+      }
+
+      if (rememberedTimeoutRef.current !== null) {
+        window.clearTimeout(rememberedTimeoutRef.current)
       }
     }
   }, [])
@@ -3063,6 +3172,21 @@ function ChatLanding() {
                             disabled={isLoading}
                           >
                             <RotateCcw className="size-3.5" />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => void handleRememberAssistantMessage(message)}
+                            className={`p-1 transition-colors ${recentlyRememberedMessageId === message.id ? 'text-green-500' : 'text-gray-400 hover:text-gray-600'}`}
+                            aria-label="Add response to memory"
+                            title="Add to memory"
+                            disabled={isLoading}
+                          >
+                            {recentlyRememberedMessageId === message.id ? (
+                              <Check className="size-3.5" />
+                            ) : (
+                              <BookMarked className="size-3.5" />
+                            )}
                           </button>
                           </div>
                         ) : null}

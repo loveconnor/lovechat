@@ -177,4 +177,58 @@ export async function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_created
     ON chat_messages (conversation_id, created_at)
   `)
+
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS user_memories (
+      id UUID PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      content_normalized TEXT NOT NULL,
+      source TEXT NOT NULL CHECK (source IN ('manual', 'auto')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_used_at TIMESTAMPTZ
+    )
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD COLUMN IF NOT EXISTS content_normalized TEXT
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual'
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ
+  `)
+
+  await pgPool.query(`
+    UPDATE user_memories
+    SET content_normalized = lower(regexp_replace(trim(content), '\\s+', ' ', 'g'))
+    WHERE content_normalized IS NULL OR content_normalized = ''
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ALTER COLUMN content_normalized SET NOT NULL
+  `)
+
+  await pgPool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_user_memories_user_content
+    ON user_memories (user_id, content_normalized)
+  `)
+
+  await pgPool.query(`
+    CREATE INDEX IF NOT EXISTS idx_user_memories_user_updated
+    ON user_memories (user_id, updated_at DESC)
+  `)
 }
