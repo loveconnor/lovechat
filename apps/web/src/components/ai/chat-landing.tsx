@@ -53,6 +53,12 @@ type UsedMemoryContext = {
   score?: number
 }
 
+type FollowUpSuggestion = {
+  id: string
+  label: string
+  prompt: string
+}
+
 type ChatMessage = {
   id: string
   messageId?: number
@@ -106,6 +112,7 @@ type ChatGenerationPayload = {
   sessionTitle?: string
   status: 'queued' | 'in_progress' | 'completed' | 'failed'
   content: string
+  followUps?: unknown
   citations?: unknown
   memoryContext?: unknown
   searchedWeb?: boolean
@@ -155,6 +162,7 @@ type ChatSessionResponse = {
     id: string
     status: 'queued' | 'in_progress'
     content: string
+    followUps?: unknown
     citations?: unknown
     memoryContext?: unknown
     searchedWeb?: boolean
@@ -415,6 +423,40 @@ function normalizeMemoryContext(input: unknown): UsedMemoryContext[] {
       }
     })
     .filter((item): item is UsedMemoryContext => item !== null)
+}
+
+function normalizeFollowUps(input: unknown): FollowUpSuggestion[] {
+  if (!Array.isArray(input)) {
+    return []
+  }
+
+  const dedupeSet = new Set<string>()
+
+  return input
+    .map((item, index) => {
+      if (!item || typeof item !== 'object') {
+        return null
+      }
+
+      const candidate = item as { id?: unknown; label?: unknown; prompt?: unknown }
+      const label = typeof candidate.label === 'string' ? candidate.label.trim() : ''
+      const prompt = typeof candidate.prompt === 'string' ? candidate.prompt.trim() : ''
+      if (!label || !prompt) {
+        return null
+      }
+
+      const rawId = typeof candidate.id === 'string' ? candidate.id.trim() : ''
+      const id = rawId || `follow-up-${index + 1}`
+      const dedupeKey = `${label.toLowerCase()}::${prompt.toLowerCase()}`
+      if (dedupeSet.has(dedupeKey)) {
+        return null
+      }
+
+      dedupeSet.add(dedupeKey)
+      return { id, label, prompt }
+    })
+    .filter((item): item is FollowUpSuggestion => item !== null)
+    .slice(0, 4)
 }
 
 function memoryReasonLabel(reason: MemoryUsageReason) {
@@ -1132,6 +1174,7 @@ function ChatLanding() {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [editingDraft, setEditingDraft] = useState('')
+  const [aiFollowUps, setAiFollowUps] = useState<FollowUpSuggestion[]>([])
   const [webSearchActive, setWebSearchActive] = useState(false)
   const [learningModeActive, setLearningModeActive] = useState(false)
   const [thinkingText, setThinkingText] = useState(defaultThinkingText)
@@ -1226,13 +1269,6 @@ function ChatLanding() {
     [chatSessions, activeSessionId],
   )
   const isActiveSessionFork = Boolean(activeSession?.parentSessionId)
-  const currentBranchChildren = useMemo(() => {
-    if (!activeSessionId) {
-      return [] as ChatSessionSummary[]
-    }
-
-    return sessionsWithBranchDepth.filter((session) => session.parentSessionId === activeSessionId)
-  }, [sessionsWithBranchDepth, activeSessionId])
   const branchesByForkMessageId = useMemo(() => {
     if (!activeSessionId) {
       return {} as Record<number, ChatSessionSummary[]>
@@ -1274,6 +1310,45 @@ function ChatLanding() {
     const activeStreamingMessage = messages.find((message) => message.id === streamingMessageId)
     return activeStreamingMessage?.content ?? ''
   }, [messages, streamingMessageId])
+
+  const templateSeedText = useMemo(() => {
+    const lastUserMessage = [...messages].reverse().find((message) => message.role === 'user')
+    const seed = lastUserMessage?.content?.trim() ?? ''
+    if (!seed) {
+      return ''
+    }
+
+    return seed.replace(/\s+/g, ' ').slice(0, 220)
+  }, [messages])
+
+  const isCodeTemplateContext = useMemo(() => {
+    const source = `${templateSeedText} ${messages
+      .slice(-4)
+      .map((message) => message.content)
+      .join(' ')}`.toLowerCase()
+
+    return /(function|class|typescript|javascript|python|bug|error|stack trace|compile|refactor|code|sql|api|tsx|ts|js)/.test(source)
+  }, [messages, templateSeedText])
+
+  const hasVerifiableAssistantContext = useMemo(() => {
+    return messages.some((message) => {
+      if (message.role !== 'assistant') {
+        return false
+      }
+
+      if (!message.content.trim()) {
+        return false
+      }
+
+      // Default/demo seeded content usually lacks message ids and metadata from real generations.
+      return Boolean(
+        message.messageId !== undefined ||
+          message.searchedWeb ||
+          (message.citations?.length ?? 0) > 0 ||
+          (message.memoryContext?.length ?? 0) > 0,
+      )
+    })
+  }, [messages])
 
   function updateScrollToBottomVisibility(container: HTMLDivElement) {
     const remainingScroll = container.scrollHeight - container.scrollTop - container.clientHeight
@@ -1605,6 +1680,7 @@ function ChatLanding() {
       if (generation.status === 'completed') {
         const citations = normalizeCitations(generation.citations)
         const memoryContext = normalizeMemoryContext(generation.memoryContext)
+        const followUps = normalizeFollowUps(generation.followUps)
         const searchedWeb = Boolean(generation.searchedWeb ?? citations.length > 0)
         const finalizedContent = generation.content || ''
 
@@ -1626,6 +1702,8 @@ function ChatLanding() {
           setThinkingText(generation.thinking)
           setShowThinking(true)
         }
+
+        setAiFollowUps(followUps)
 
         stopGenerationPolling()
         setSessionGenerationStatus(generation.chatSessionId, null)
@@ -1659,6 +1737,7 @@ function ChatLanding() {
     const generationId = generation.id
     const generationMessageId = `assistant-generation-${generationId}`
     const generationContent = generation.content || ''
+    setAiFollowUps(normalizeFollowUps(generation.followUps))
 
     setActiveSessionId(sessionId)
     ensureGenerationMessage(generationMessageId, generationContent)
@@ -1862,6 +1941,7 @@ function ChatLanding() {
 
     const detailPayload = (await detailResponse.json()) as ChatSessionResponse
     setMessages(materializeMessages(detailPayload.messages))
+    setAiFollowUps([])
     resumeActiveGeneration(nextActiveId, detailPayload.activeGeneration)
     setIsSessionsLoading(false)
   }
@@ -1903,6 +1983,7 @@ function ChatLanding() {
 
     const payload = (await response.json()) as ChatSessionResponse
     setMessages(materializeMessages(payload.messages))
+    setAiFollowUps([])
     resumeActiveGeneration(sessionId, payload.activeGeneration)
     setActiveTopic(null)
   }
@@ -1917,6 +1998,7 @@ function ChatLanding() {
     setChatSessions((previousSessions) => sortSessionsByUpdatedAt([createdSession, ...previousSessions]))
     setActiveSessionId(createdSession.id)
     setMessages([])
+    setAiFollowUps([])
     setLandingGreeting((previous) => pickLandingGreeting(previous))
     setPrompt('')
     setEditingMessageId(null)
@@ -3244,6 +3326,7 @@ function ChatLanding() {
 
     setErrorMessage(null)
     setActiveTopic(null)
+    setAiFollowUps([])
     setStreamingMessageId(null)
     resetStream()
 
@@ -3286,7 +3369,7 @@ function ChatLanding() {
     setDesktopSidebarOpen((current) => !current)
   }
 
-  function renderBranchTree(parentId: string | null, depth = 0): JSX.Element | null {
+  function renderBranchTree(parentId: string | null, depth = 0): React.ReactElement | null {
     const key = parentId ?? '__root__'
     const children = (branchTreeChildrenByParent[key] ?? []).slice().sort((left, right) => {
       return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
@@ -3400,7 +3483,7 @@ function ChatLanding() {
               <ChatInput
                 prompt={prompt}
                 onPromptChange={setPrompt}
-                onSubmit={(files) => void submitPrompt(undefined, files)}
+                onSubmit={(files, promptOverride) => void submitPrompt(promptOverride, files)}
                 onStop={handleStopAssistantResponse}
                 isLoading={isLoading}
                 selectedModel={selectedModel}
@@ -3409,6 +3492,12 @@ function ChatLanding() {
                 onWebSearchChange={setWebSearchActive}
                 learningModeActive={learningModeActive}
                 onLearningModeChange={setLearningModeActive}
+                showQuickTemplates={templateSeedText.length > 0 && hasVerifiableAssistantContext}
+                templateSeedText={templateSeedText}
+                isCodeContext={isCodeTemplateContext}
+                aiFollowUps={aiFollowUps}
+                quickTemplateMode="starter"
+                autoSendQuickTemplates={false}
               />
 
               <div className="z-10 mt-4 flex w-full flex-wrap items-center justify-center gap-2 sm:mt-5 sm:gap-3">
@@ -3460,15 +3549,9 @@ function ChatLanding() {
               className="min-h-0 flex-1 overflow-y-auto pb-44 [&::-webkit-scrollbar-thumb]:rounded-[10px] [&::-webkit-scrollbar-thumb]:bg-[#E5E7EB] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1.5"
             >
               <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-start gap-8 pt-8 pb-4">
-                {currentBranchChildren.length === 0 ? (
-                  <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] text-blue-900">
-                    New: Branch this conversation like Git. Use Fork chat from here on any message to explore alternatives.
-                  </div>
-                ) : null}
-
                 {messages.map((message) =>
                   message.role === 'user' ? (
-                    <div key={message.id} className="group relative flex w-full flex-col items-end">
+                    <div id={`message-${message.id}`} key={message.id} className="group relative flex w-full flex-col items-end">
                       <div className="flex w-full max-w-[80%] flex-col items-end gap-2.5">
                         {(message.attachments ?? []).length > 0 ? (
                           <div className="w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -3591,7 +3674,7 @@ function ChatLanding() {
                       ) : null}
                     </div>
                   ) : (
-                    <div key={message.id} className="group w-full max-w-[90%]">
+                    <div id={`message-${message.id}`} key={message.id} className="group w-full max-w-[90%]">
                       <div className="pt-1 text-[15px] leading-relaxed text-gray-800">
                         {(() => {
                           const renderedContent =
@@ -3802,7 +3885,7 @@ function ChatLanding() {
                   <ChatInput
                     prompt={prompt}
                     onPromptChange={setPrompt}
-                    onSubmit={(files) => void submitPrompt(undefined, files)}
+                    onSubmit={(files, promptOverride) => void submitPrompt(promptOverride, files)}
                     onStop={handleStopAssistantResponse}
                     isLoading={isLoading}
                     selectedModel={selectedModel}
@@ -3811,6 +3894,15 @@ function ChatLanding() {
                     onWebSearchChange={setWebSearchActive}
                     learningModeActive={learningModeActive}
                     onLearningModeChange={setLearningModeActive}
+                    showQuickTemplates={
+                      !showScrollToBottom &&
+                      aiFollowUps.length > 0
+                    }
+                    templateSeedText={templateSeedText}
+                    isCodeContext={isCodeTemplateContext}
+                    aiFollowUps={aiFollowUps}
+                    quickTemplateMode="follow-up"
+                    autoSendQuickTemplates={true}
                   />
                 </div>
               </div>

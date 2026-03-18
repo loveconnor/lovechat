@@ -2372,6 +2372,118 @@ type GenerationTaskPayload = {
   messages: Array<z.infer<typeof chatMessageSchema>>
 }
 
+const followUpSuggestionSchema = z.object({
+  id: z.string().trim().min(1).max(48).optional(),
+  label: z.string().trim().min(1).max(48),
+  prompt: z.string().trim().min(1).max(280),
+})
+
+const followUpSuggestionPayloadSchema = z.object({
+  followUps: z.array(followUpSuggestionSchema).max(4),
+})
+
+type FollowUpSuggestion = {
+  id: string
+  label: string
+  prompt: string
+}
+
+function slugifyFollowUpId(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+}
+
+function normalizeFollowUps(raw: unknown): FollowUpSuggestion[] {
+  const parsed = followUpSuggestionPayloadSchema.safeParse(raw)
+  if (!parsed.success) {
+    return []
+  }
+
+  const seen = new Set<string>()
+  const normalized: FollowUpSuggestion[] = []
+
+  for (const [index, item] of parsed.data.followUps.entries()) {
+    const prompt = item.prompt.trim()
+    const label = item.label.trim()
+    if (!prompt || !label) {
+      continue
+    }
+
+    const dedupeKey = `${label.toLowerCase()}::${prompt.toLowerCase()}`
+    if (seen.has(dedupeKey)) {
+      continue
+    }
+
+    seen.add(dedupeKey)
+    const idBase = item.id?.trim() ? item.id : label
+    const id = slugifyFollowUpId(idBase) || `follow-up-${index + 1}`
+
+    normalized.push({
+      id,
+      label,
+      prompt,
+    })
+  }
+
+  return normalized.slice(0, 4)
+}
+
+async function generateAiFollowUps(model: string, userMessage: string, assistantMessage: string) {
+  if (!openaiClient || !assistantMessage.trim()) {
+    return [] as FollowUpSuggestion[]
+  }
+
+  try {
+    const response = await openaiClient.responses.create({
+      model,
+      input: [
+        {
+          role: 'system',
+          content:
+            'Generate concise follow-up suggestion chips for the assistant response. Return strict JSON only in this format: {"followUps":[{"id":"...","label":"...","prompt":"..."}]}. Keep 1-4 items. Labels must be 2-4 words and action-oriented. Prompts must be specific and executable.',
+        },
+        {
+          role: 'user',
+          content: `User message:\n${userMessage || '(none)'}\n\nAssistant response:\n${assistantMessage}`,
+        },
+      ],
+    })
+
+    const responseRecord = response as { output_text?: string; output?: unknown }
+    const rawText = typeof responseRecord.output_text === 'string'
+      ? responseRecord.output_text.trim()
+      : extractTextAndCitations(responseRecord.output, responseRecord).text.trim()
+
+    if (!rawText) {
+      return [] as FollowUpSuggestion[]
+    }
+
+    let parsedPayload: unknown = null
+    try {
+      parsedPayload = JSON.parse(rawText)
+    } catch {
+      const objectMatch = rawText.match(/\{[\s\S]*\}/)
+      if (!objectMatch) {
+        return [] as FollowUpSuggestion[]
+      }
+
+      try {
+        parsedPayload = JSON.parse(objectMatch[0])
+      } catch {
+        return [] as FollowUpSuggestion[]
+      }
+    }
+
+    return normalizeFollowUps(parsedPayload)
+  } catch (error) {
+    app.log.warn({ error }, 'unable to generate AI follow-up suggestions')
+    return [] as FollowUpSuggestion[]
+  }
+}
+
 const fallbackOpenAIImageModel = 'gpt-image-1'
 
 async function markGenerationFailed(generationId: string, message: string) {
@@ -2463,6 +2575,7 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
   let assistantSearchedWeb = false
   let citations: SerializableCitation[] = []
   let modelUsed = payload.model
+  let followUps: FollowUpSuggestion[] = []
 
   if (isImageGenerationModel) {
     const lastUserPrompt = [...payload.messages]
@@ -2586,6 +2699,14 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
     return
   }
 
+  if (!isImageGenerationModel) {
+    followUps = await generateAiFollowUps(
+      modelUsed,
+      lastUserMessage?.content ?? '',
+      text,
+    )
+  }
+
   const sessionTitle = buildSessionTitle(payload.messages, text)
 
   const dbClient = await pgPool.connect()
@@ -2679,10 +2800,11 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
       SET
         status = 'completed',
         response_text = $2,
-        citations_json = $3::jsonb,
-        memory_context_json = $4::jsonb,
-        searched_web = $5,
-        thinking_text = $6,
+        follow_ups_json = $3::jsonb,
+        citations_json = $4::jsonb,
+        memory_context_json = $5::jsonb,
+        searched_web = $6,
+        thinking_text = $7,
         error_message = NULL,
         updated_at = NOW(),
         completed_at = NOW()
@@ -2691,6 +2813,7 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
       [
         payload.generationId,
         text,
+        JSON.stringify(followUps),
         JSON.stringify(citations),
         JSON.stringify(usedMemoryContext),
         assistantSearchedWeb,
@@ -4224,6 +4347,7 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
       id: string
       status: 'queued' | 'in_progress'
       response_text: string
+      follow_ups_json: unknown
       citations_json: unknown
       memory_context_json: unknown
       searched_web: boolean
@@ -4234,7 +4358,7 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
       completed_at: string | null
     }>(
       `
-      SELECT id, status, response_text, citations_json, memory_context_json, searched_web, thinking_text, error_message, created_at, updated_at, completed_at
+      SELECT id, status, response_text, follow_ups_json, citations_json, memory_context_json, searched_web, thinking_text, error_message, created_at, updated_at, completed_at
       FROM chat_generations
       WHERE conversation_id = $1 AND user_id = $2 AND status IN ('queued', 'in_progress')
       ORDER BY created_at DESC
@@ -4278,6 +4402,7 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
               id: activeGeneration.id,
               status: activeGeneration.status,
               content: activeGeneration.response_text,
+              followUps: Array.isArray(activeGeneration.follow_ups_json) ? activeGeneration.follow_ups_json : [],
               citations: Array.isArray(activeGeneration.citations_json) ? activeGeneration.citations_json : [],
               memoryContext: Array.isArray(activeGeneration.memory_context_json)
                 ? activeGeneration.memory_context_json
@@ -4630,6 +4755,7 @@ app.get('/chat/generations/:generationId', async (request, reply) => {
       conversation_id: string
       status: 'queued' | 'in_progress' | 'completed' | 'failed'
       response_text: string
+      follow_ups_json: unknown
       citations_json: unknown
       memory_context_json: unknown
       searched_web: boolean
@@ -4646,6 +4772,7 @@ app.get('/chat/generations/:generationId', async (request, reply) => {
         g.conversation_id,
         g.status,
         g.response_text,
+        g.follow_ups_json,
         g.citations_json,
         g.memory_context_json,
         g.searched_web,
@@ -4677,6 +4804,7 @@ app.get('/chat/generations/:generationId', async (request, reply) => {
         sessionTitle: generation.session_title,
         status: generation.status,
         content: generation.response_text,
+        followUps: Array.isArray(generation.follow_ups_json) ? generation.follow_ups_json : [],
         citations: Array.isArray(generation.citations_json) ? generation.citations_json : [],
         memoryContext: Array.isArray(generation.memory_context_json) ? generation.memory_context_json : [],
         searchedWeb: Boolean(generation.searched_web),

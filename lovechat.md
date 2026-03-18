@@ -218,6 +218,46 @@ Composer capabilities include:
 - Clipboard-paste image ingestion
 - File pill previews and remove actions
 
+## 6.4.1 Power Input: Slash Commands and Follow-up Suggestions
+
+LoveChat now includes keyboard-first prompt acceleration inside the composer.
+
+Slash commands:
+
+- Typing `/` opens a command menu directly in the input.
+- Supported command presets:
+  - `/summarize`
+  - `/rewrite`
+  - `/fix-code`
+- Selecting a command applies a prompt-prefix pill in the input, then composes your final prompt as:
+  - command prefix + typed text
+- Slash commands can be selected by keyboard:
+  - `ArrowUp` / `ArrowDown` to navigate
+  - `Enter` to select
+  - `Escape` to close
+  - `Backspace` on empty input to remove active command pill
+
+Keyboard-first shortcuts:
+
+- `Cmd+K` (macOS) or `Ctrl+K` (Windows/Linux) focuses the chat input.
+- Pressing `/` outside typing contexts focuses the input and opens slash mode.
+
+AI-generated follow-up suggestions:
+
+- After an assistant message finishes streaming, the backend generates 1-4 follow-up chips.
+- Suggestions are returned as structured items (`id`, `label`, `prompt`) and stored with the generation record.
+- The chat composer renders these chips in follow-up mode at the bottom composer only.
+- Chips are auto-send actions by default: selecting one immediately submits its prepared prompt.
+- Follow-up chips are intentionally hidden while generation is in progress.
+
+Backend follow-up generation flow:
+
+1. Chat completion text is generated.
+2. Backend calls a follow-up suggestion generation step using the latest user message + assistant response.
+3. Suggestions are normalized and persisted to `chat_generations.follow_ups_json`.
+4. Polling response (`GET /chat/generations/:generationId`) includes `followUps`.
+5. Frontend stores `followUps` and exposes them as composer quick actions.
+
 Per-file preview behavior:
 
 - Images: inline preview

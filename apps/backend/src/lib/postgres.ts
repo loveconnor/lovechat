@@ -202,6 +202,7 @@ export async function initializeDatabase() {
       input_messages_json JSONB NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'failed')),
       response_text TEXT NOT NULL DEFAULT '',
+      follow_ups_json JSONB NOT NULL DEFAULT '[]'::jsonb,
       citations_json JSONB NOT NULL DEFAULT '[]'::jsonb,
       memory_context_json JSONB NOT NULL DEFAULT '[]'::jsonb,
       searched_web BOOLEAN NOT NULL DEFAULT FALSE,
@@ -211,6 +212,11 @@ export async function initializeDatabase() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       completed_at TIMESTAMPTZ
     )
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE chat_generations
+    ADD COLUMN IF NOT EXISTS follow_ups_json JSONB NOT NULL DEFAULT '[]'::jsonb
   `)
 
   await pgPool.query(`
