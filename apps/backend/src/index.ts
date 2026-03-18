@@ -172,8 +172,16 @@ const renameChatSessionSchema = z.object({
 const memoryEntrySchema = z.object({
   content: z.string().trim().min(2).max(2_000),
   source: z.enum(['manual', 'auto']).optional().default('manual'),
+  category: z.enum(['identity', 'preferences', 'goals', 'constraints']).optional(),
+  scope: z.enum(['global', 'session']).optional(),
+  chatSessionId: z.string().uuid().optional(),
+  expiresAt: z.string().datetime().optional(),
   summarize: z.boolean().optional().default(false),
   summarizeMode: z.enum(['default', 'assistant_response', 'user_request']).optional().default('default'),
+})
+
+const memoryFeedbackSchema = z.object({
+  feedback: z.enum(['up', 'down']),
 })
 
 const memoryIdParamSchema = z.object({
@@ -246,14 +254,44 @@ type PersonalizationProfile = {
 }
 
 type MemorySource = 'manual' | 'auto'
+type MemoryCategory = 'identity' | 'preferences' | 'goals' | 'constraints'
+type MemoryScope = 'global' | 'session'
 
 type UserMemory = {
   id: string
   content: string
   source: MemorySource
+  category: MemoryCategory
+  scope: MemoryScope
+  chatSessionId: string | null
+  confidenceScore: number
+  expiresAt: string | null
   createdAt: string
   updatedAt: string
 }
+
+type UserMemoryCandidate = UserMemory & {
+  embedding: number[] | null
+  embeddingModel: string | null
+  importanceScore: number
+  usageCount: number
+  lastUsedAt: string | null
+}
+
+type MemoryUsageReason = 'identity' | 'style_preference' | 'goal_alignment' | 'constraint_guardrail'
+
+type UsedMemoryContext = {
+  id: string
+  content: string
+  category: MemoryCategory
+  reason: MemoryUsageReason
+  score: number
+}
+
+const MEMORY_RETRIEVAL_TOP_K = 8
+const MEMORY_RETRIEVAL_CANDIDATE_LIMIT = 80
+const MEMORY_DEFAULT_IMPORTANCE_SCORE = 0.5
+const MEMORY_PROMPT_TOKEN_BUDGET = 800
 
 const BASE_STYLE_PROMPTS: Record<BaseStyleTone, string> = {
   default: 'Maintain a helpful, clear, and balanced conversational tone.',
@@ -720,15 +758,414 @@ async function inferAutoMemoryCandidates(content: string) {
   return Array.from(deduped.values()).slice(0, 3)
 }
 
-function buildMemoryPrompt(memories: UserMemory[]) {
-  if (memories.length === 0) {
-    return ''
+function estimateTokenCount(value: string) {
+  const normalized = normalizeMemoryContent(value)
+  if (!normalized) {
+    return 0
   }
 
-  const lines = memories.map((memory, index) => `${index + 1}. ${memory.content}`)
-  return ['# LONG-TERM USER MEMORY', 'Use these as durable user facts/preferences when relevant:', ...lines].join(
-    '\n',
+  // Fast heuristic: ~4 characters per token for mixed English/code text.
+  return Math.max(1, Math.ceil(normalized.length / 4))
+}
+
+function packMemoryLinesWithinBudget(lines: string[], maxTokens: number) {
+  const packed: string[] = []
+  let usedTokens = 0
+
+  for (const line of lines) {
+    const lineTokens = estimateTokenCount(line)
+    if (usedTokens + lineTokens > maxTokens) {
+      break
+    }
+
+    packed.push(line)
+    usedTokens += lineTokens
+  }
+
+  return {
+    lines: packed,
+    usedTokens,
+  }
+}
+
+function buildMemoryPrompt(
+  memories: UserMemory[],
+  maxTokens = MEMORY_PROMPT_TOKEN_BUDGET,
+): { prompt: string; usedMemories: UsedMemoryContext[] } {
+  if (memories.length === 0) {
+    return {
+      prompt: '',
+      usedMemories: [],
+    }
+  }
+
+  const identityMemories = memories.filter((memory) => memory.category === 'identity')
+  const preferenceMemories = memories.filter((memory) => memory.category === 'preferences')
+  const goalMemories = memories.filter((memory) => memory.category === 'goals')
+  const constraintMemories = memories.filter((memory) => memory.category === 'constraints')
+
+  const staticHeaderLines = ['# LONG-TERM USER MEMORY']
+  const staticHeaderTokens = estimateTokenCount(staticHeaderLines.join('\n'))
+  const effectiveBudget = Math.max(120, maxTokens)
+
+  if (staticHeaderTokens >= effectiveBudget) {
+    return {
+      prompt: staticHeaderLines[0],
+      usedMemories: [],
+    }
+  }
+
+  const orderedSectionConfigs: Array<{ title: string; instruction: string; memories: UserMemory[] }> = [
+    {
+      title: '## IDENTITY',
+      instruction: 'Always keep these identity facts in mind unless the user explicitly corrects them:',
+      memories: identityMemories,
+    },
+    {
+      title: '## PREFERENCES',
+      instruction: 'Use these to shape tone, formatting, and response style:',
+      memories: preferenceMemories,
+    },
+    {
+      title: '## GOALS',
+      instruction: 'Bias suggestions, examples, and next steps toward these goals when relevant:',
+      memories: goalMemories,
+    },
+    {
+      title: '## CONSTRAINTS',
+      instruction: 'Respect these constraints, tools, or boundaries in proposed solutions:',
+      memories: constraintMemories,
+    },
+  ]
+
+  const sections: string[] = [...staticHeaderLines]
+  const usedMemories: UsedMemoryContext[] = []
+  let remainingTokens = effectiveBudget - staticHeaderTokens
+
+  for (const section of orderedSectionConfigs) {
+    if (section.memories.length === 0 || remainingTokens <= 0) {
+      continue
+    }
+
+    const memoryLines = section.memories.map((memory, index) => `${index + 1}. ${memory.content}`)
+    const packed = packMemoryLinesWithinBudget(memoryLines, remainingTokens)
+
+    if (packed.lines.length === 0) {
+      continue
+    }
+
+    const sectionMetaTokens = estimateTokenCount(`${section.title}\n${section.instruction}`)
+    if (sectionMetaTokens + packed.usedTokens > remainingTokens) {
+      continue
+    }
+
+    sections.push(section.title, section.instruction, ...packed.lines, '')
+    const packedCount = packed.lines.length
+    for (let index = 0; index < packedCount; index += 1) {
+      const memory = section.memories[index]
+      if (!memory) {
+        continue
+      }
+
+      usedMemories.push({
+        id: memory.id,
+        content: memory.content,
+        category: memory.category,
+        reason: memoryUsageReason(memory.category),
+        score: 0,
+      })
+    }
+    remainingTokens -= sectionMetaTokens + packed.usedTokens
+  }
+
+  return {
+    prompt: sections.join('\n').trim(),
+    usedMemories,
+  }
+}
+
+function inferMemoryCategory(content: string): MemoryCategory {
+  const normalized = plainTextForMemory(content).toLowerCase()
+
+  if (
+    /\b(goal|working on|building|launch(?:ing)?|trying to|plan to|planning to|want to|need to|roadmap|milestone)\b/.test(
+      normalized,
+    )
+  ) {
+    return 'goals'
+  }
+
+  if (
+    /\b(prefer|prefers|i like|i dislike|i hate|short answers?|concise|detailed|tone|style|format|bullet points?|emoji|emojis)\b/.test(
+      normalized,
+    )
+  ) {
+    return 'preferences'
+  }
+
+  if (
+    /\b(i am|i'm|my name is|i was|i study|i work as|i live|my pronouns|i identify as|background)\b/.test(
+      normalized,
+    )
+  ) {
+    return 'identity'
+  }
+
+  if (
+    /\b(i use|using|must|cannot|can't|constraint|limited to|next\.?js|typescript|react|node\.?js|postgres|redis|docker|budget|deadline)\b/.test(
+      normalized,
+    )
+  ) {
+    return 'constraints'
+  }
+
+  return 'constraints'
+}
+
+function inferMemoryScope(
+  content: string,
+  category: MemoryCategory,
+  chatSessionId?: string,
+  requestedScope?: MemoryScope,
+): MemoryScope {
+  if (requestedScope) {
+    return requestedScope
+  }
+
+  if (!chatSessionId) {
+    return 'global'
+  }
+
+  const normalized = plainTextForMemory(content).toLowerCase()
+  const looksTemporary =
+    /\b(today|tonight|this week|this month|for now|currently|temporary|until|deadline|exam|interview)\b/.test(
+      normalized,
+    )
+
+  if (looksTemporary || category === 'goals') {
+    return 'session'
+  }
+
+  return 'global'
+}
+
+function inferMemoryExpiry(content: string, category: MemoryCategory): string | null {
+  const normalized = plainTextForMemory(content).toLowerCase()
+  const now = new Date()
+
+  if (category === 'identity' || category === 'preferences') {
+    return null
+  }
+
+  const ttlDays =
+    category === 'goals'
+      ? 45
+      : /\b(for now|currently|temporary|until)\b/.test(normalized)
+        ? 30
+        : 180
+
+  const expires = new Date(now.getTime() + ttlDays * 24 * 60 * 60 * 1000)
+  return expires.toISOString()
+}
+
+function tokenizeForSimilarity(value: string) {
+  return new Set(tokenizeForMemoryRetrieval(value))
+}
+
+function jaccardSimilarity(left: string, right: string) {
+  const leftTokens = tokenizeForSimilarity(left)
+  const rightTokens = tokenizeForSimilarity(right)
+  if (leftTokens.size === 0 || rightTokens.size === 0) {
+    return 0
+  }
+
+  let intersection = 0
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      intersection += 1
+    }
+  }
+
+  const union = new Set([...leftTokens, ...rightTokens]).size
+  return union === 0 ? 0 : intersection / union
+}
+
+function detectPreferenceAxis(content: string): 'length' | 'tone' | null {
+  const normalized = plainTextForMemory(content).toLowerCase()
+  if (/\b(short|concise|brief|detailed|detail|long|thorough)\b/.test(normalized)) {
+    return 'length'
+  }
+
+  if (/\b(tone|formal|casual|professional|friendly|emoji|markdown)\b/.test(normalized)) {
+    return 'tone'
+  }
+
+  return null
+}
+
+function detectPreferencePolarity(content: string): 'short' | 'detailed' | 'neutral' {
+  const normalized = plainTextForMemory(content).toLowerCase()
+  if (/\b(short|concise|brief)\b/.test(normalized)) {
+    return 'short'
+  }
+
+  if (/\b(detailed|detail|long|thorough|explain everything)\b/.test(normalized)) {
+    return 'detailed'
+  }
+
+  return 'neutral'
+}
+
+function memoryUsageReason(category: MemoryCategory): MemoryUsageReason {
+  if (category === 'identity') {
+    return 'identity'
+  }
+
+  if (category === 'preferences') {
+    return 'style_preference'
+  }
+
+  if (category === 'goals') {
+    return 'goal_alignment'
+  }
+
+  return 'constraint_guardrail'
+}
+
+function parseStoredEmbedding(value: unknown) {
+  if (!Array.isArray(value) || value.length === 0) {
+    return null
+  }
+
+  const embedding: number[] = []
+  for (const item of value) {
+    if (typeof item !== 'number' || !Number.isFinite(item)) {
+      return null
+    }
+
+    embedding.push(item)
+  }
+
+  return embedding
+}
+
+function normalizeImportanceScore(value: number | null | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return MEMORY_DEFAULT_IMPORTANCE_SCORE
+  }
+
+  return Math.min(1, Math.max(0, value))
+}
+
+function normalizeUsageCount(value: number | null | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 0
+  }
+
+  return Math.max(0, Math.floor(value))
+}
+
+function parseDateMs(value: string | null | undefined) {
+  if (!value) {
+    return null
+  }
+
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function calculateImportanceComponent(memory: UserMemoryCandidate, nowMs: number) {
+  const baseImportance = normalizeImportanceScore(memory.importanceScore)
+  const frequencyScore = Math.min(1, Math.log1p(normalizeUsageCount(memory.usageCount)) / Math.log(10))
+  const confidenceScore = Math.min(1, Math.max(0, memory.confidenceScore))
+
+  const updatedMs = parseDateMs(memory.updatedAt) ?? nowMs
+  const ageDays = Math.max(0, (nowMs - updatedMs) / (1000 * 60 * 60 * 24))
+  const categoryHalfLifeDays: Record<MemoryCategory, number> = {
+    identity: 3650,
+    preferences: 365,
+    goals: 30,
+    constraints: 120,
+  }
+  const temporalDecay = Math.exp(-ageDays / categoryHalfLifeDays[memory.category])
+
+  return (baseImportance * 0.55 + frequencyScore * 0.25 + confidenceScore * 0.2) * temporalDecay
+}
+
+function calculateRecencyComponent(memory: UserMemoryCandidate, nowMs: number) {
+  const lastUsedMs = parseDateMs(memory.lastUsedAt)
+  if (lastUsedMs === null) {
+    return 0
+  }
+
+  const elapsedMs = Math.max(0, nowMs - lastUsedMs)
+  const elapsedDays = elapsedMs / (1000 * 60 * 60 * 24)
+  // Exponential decay with ~30-day half-life style behavior.
+  return Math.exp(-elapsedDays / 30)
+}
+
+function calculateMemoryRankingScore(memory: UserMemoryCandidate, relevance: number, nowMs: number) {
+  const normalizedRelevance = Math.min(1, Math.max(0, relevance))
+  const importance = calculateImportanceComponent(memory, nowMs)
+  const recency = calculateRecencyComponent(memory, nowMs)
+
+  return {
+    score: normalizedRelevance + importance + recency,
+    relevance: normalizedRelevance,
+  }
+}
+
+async function loadUserMemoryCandidates(
+  userId: number,
+  chatSessionId?: string,
+  limit = MEMORY_RETRIEVAL_CANDIDATE_LIMIT,
+): Promise<UserMemoryCandidate[]> {
+  const result = await pgPool.query<{
+    id: string
+    content: string
+    source: MemorySource
+    memory_type: MemoryCategory
+    scope_type: MemoryScope
+    session_id: string | null
+    confidence_score: number | null
+    expires_at: string | null
+    created_at: string
+    updated_at: string
+    last_used_at: string | null
+    embedding_json: unknown
+    embedding_model: string | null
+    importance_score: number | null
+    usage_count: number | null
+  }>(
+    `
+    SELECT id, content, source, memory_type, scope_type, session_id, confidence_score, expires_at, created_at, updated_at, last_used_at, embedding_json, embedding_model, importance_score, usage_count
+    FROM user_memories
+    WHERE user_id = $1
+      AND (expires_at IS NULL OR expires_at > NOW())
+      AND (scope_type = 'global' OR (scope_type = 'session' AND session_id = $2))
+    ORDER BY updated_at DESC
+    LIMIT $3
+    `,
+    [userId, chatSessionId ?? null, limit],
   )
+
+  return result.rows.map((row) => ({
+    id: row.id,
+    content: row.content,
+    source: row.source,
+    category: row.memory_type,
+    scope: row.scope_type,
+    chatSessionId: row.session_id,
+    confidenceScore: Math.min(1, Math.max(0, row.confidence_score ?? 0.6)),
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lastUsedAt: row.last_used_at,
+    embedding: parseStoredEmbedding(row.embedding_json),
+    embeddingModel: row.embedding_model,
+    importanceScore: normalizeImportanceScore(row.importance_score),
+    usageCount: normalizeUsageCount(row.usage_count),
+  }))
 }
 
 async function loadUserMemories(userId: number, limit = 40): Promise<UserMemory[]> {
@@ -736,11 +1173,16 @@ async function loadUserMemories(userId: number, limit = 40): Promise<UserMemory[
     id: string
     content: string
     source: MemorySource
+    memory_type: MemoryCategory
+    scope_type: MemoryScope
+    session_id: string | null
+    confidence_score: number | null
+    expires_at: string | null
     created_at: string
     updated_at: string
   }>(
     `
-    SELECT id, content, source, created_at, updated_at
+    SELECT id, content, source, memory_type, scope_type, session_id, confidence_score, expires_at, created_at, updated_at
     FROM user_memories
     WHERE user_id = $1
     ORDER BY updated_at DESC
@@ -753,25 +1195,370 @@ async function loadUserMemories(userId: number, limit = 40): Promise<UserMemory[
     id: row.id,
     content: row.content,
     source: row.source,
+    category: row.memory_type,
+    scope: row.scope_type,
+    chatSessionId: row.session_id,
+    confidenceScore: Math.min(1, Math.max(0, row.confidence_score ?? 0.6)),
+    expiresAt: row.expires_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }))
 }
 
-async function upsertUserMemory(userId: number, content: string, source: MemorySource) {
+async function storeMemoryEmbedding(memoryId: string, embedding: number[]) {
+  await pgPool.query(
+    `
+    UPDATE user_memories
+    SET embedding_model = $2, embedding_json = $3::jsonb, embedding_updated_at = NOW()
+    WHERE id = $1
+    `,
+    [memoryId, env.OPENAI_EMBEDDING_MODEL, JSON.stringify(embedding)],
+  )
+}
+
+async function touchUserMemories(memoryIds: string[]) {
+  if (memoryIds.length === 0) {
+    return
+  }
+
+  await pgPool.query(
+    `
+    UPDATE user_memories
+    SET last_used_at = NOW(), usage_count = COALESCE(usage_count, 0) + 1
+    WHERE id = ANY($1::uuid[])
+    `,
+    [memoryIds],
+  )
+}
+
+function cosineSimilarity(a: number[], b: number[]) {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) {
+    return -1
+  }
+
+  let dot = 0
+  let normA = 0
+  let normB = 0
+
+  for (let index = 0; index < a.length; index += 1) {
+    const aValue = a[index]
+    const bValue = b[index]
+    dot += aValue * bValue
+    normA += aValue * aValue
+    normB += bValue * bValue
+  }
+
+  if (normA === 0 || normB === 0) {
+    return -1
+  }
+
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB))
+}
+
+function tokenizeForMemoryRetrieval(value: string) {
+  return plainTextForMemory(value)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 3)
+}
+
+function selectMemoriesLexically(memories: UserMemoryCandidate[], userMessage: string, topK: number) {
+  const queryTokens = new Set(tokenizeForMemoryRetrieval(userMessage))
+  const nowMs = Date.now()
+  const hasQueryTerms = queryTokens.size > 0
+
+  const scored = memories.map((memory) => {
+    if (!hasQueryTerms) {
+      const ranking = calculateMemoryRankingScore(memory, 0, nowMs)
+      return { memory, score: ranking.score, relevance: ranking.relevance }
+    }
+
+    const memoryTokens = tokenizeForMemoryRetrieval(memory.content)
+    if (memoryTokens.length === 0) {
+      const ranking = calculateMemoryRankingScore(memory, 0, nowMs)
+      return { memory, score: ranking.score, relevance: ranking.relevance }
+    }
+
+    const overlapCount = memoryTokens.reduce(
+      (count, token) => (queryTokens.has(token) ? count + 1 : count),
+      0,
+    )
+
+    const relevance = overlapCount / Math.sqrt(queryTokens.size * memoryTokens.length)
+    const ranking = calculateMemoryRankingScore(memory, relevance, nowMs)
+    return { memory, score: ranking.score, relevance: ranking.relevance }
+  })
+
+  const positiveMatches = scored
+    .filter((item) => (hasQueryTerms ? item.relevance > 0 : item.score > 0))
+    .sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score
+      }
+
+      if (b.relevance !== a.relevance) {
+        return b.relevance - a.relevance
+      }
+
+      return Date.parse(b.memory.updatedAt) - Date.parse(a.memory.updatedAt)
+    })
+
+  if (positiveMatches.length === 0) {
+    return memories.slice(0, Math.min(topK, 3))
+  }
+
+  return positiveMatches.slice(0, topK).map((item) => item.memory)
+}
+
+async function embedTextBatch(texts: string[]) {
+  if (!openaiClient || texts.length === 0) {
+    return null
+  }
+
+  try {
+    const response = await openaiClient.embeddings.create({
+      model: env.OPENAI_EMBEDDING_MODEL,
+      input: texts,
+    })
+
+    const data = (response as { data?: Array<{ embedding?: unknown }> }).data
+    if (!Array.isArray(data) || data.length !== texts.length) {
+      return null
+    }
+
+    const vectors: number[][] = []
+    for (const item of data) {
+      const embedding = parseStoredEmbedding(item.embedding)
+      if (!embedding) {
+        return null
+      }
+
+      vectors.push(embedding)
+    }
+
+    return vectors
+  } catch (error) {
+    app.log.warn({ error }, 'memory embedding request failed')
+    return null
+  }
+}
+
+async function selectRelevantMemories(userMessage: string, memories: UserMemoryCandidate[], topK: number) {
+  if (memories.length === 0) {
+    return [] as UserMemory[]
+  }
+
+  const limitedTopK = Math.max(1, Math.min(topK, memories.length))
+  const normalizedUserMessage = plainTextForMemory(userMessage)
+  if (!normalizedUserMessage) {
+    return memories.slice(0, limitedTopK)
+  }
+
+  if (!openaiClient) {
+    return selectMemoriesLexically(memories, normalizedUserMessage, limitedTopK)
+  }
+
+  const queryVectors = await embedTextBatch([normalizedUserMessage])
+  const queryVector = queryVectors?.[0]
+  if (!queryVector) {
+    return selectMemoriesLexically(memories, normalizedUserMessage, limitedTopK)
+  }
+
+  const staleMemories = memories.filter(
+    (memory) => !memory.embedding || memory.embeddingModel !== env.OPENAI_EMBEDDING_MODEL,
+  )
+
+  if (staleMemories.length > 0) {
+    const staleVectors = await embedTextBatch(staleMemories.map((memory) => memory.content))
+    if (staleVectors) {
+      await Promise.all(
+        staleMemories.map(async (memory, index) => {
+          const vector = staleVectors[index]
+          if (!vector) {
+            return
+          }
+
+          memory.embedding = vector
+          memory.embeddingModel = env.OPENAI_EMBEDDING_MODEL
+          await storeMemoryEmbedding(memory.id, vector)
+        }),
+      )
+    }
+  }
+
+  const nowMs = Date.now()
+  const scored = memories
+    .map((memory) => {
+      const similarity = memory.embedding ? cosineSimilarity(queryVector, memory.embedding) : -1
+      if (similarity < 0) {
+        return null
+      }
+
+      const ranking = calculateMemoryRankingScore(memory, similarity, nowMs)
+      return {
+        memory,
+        score: ranking.score,
+        relevance: ranking.relevance,
+      }
+    })
+    .filter((item): item is { memory: UserMemoryCandidate; score: number; relevance: number } => item !== null)
+    .sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score
+      }
+
+      if (b.relevance !== a.relevance) {
+        return b.relevance - a.relevance
+      }
+
+      return Date.parse(b.memory.updatedAt) - Date.parse(a.memory.updatedAt)
+    })
+
+  if (scored.length === 0) {
+    return selectMemoriesLexically(memories, normalizedUserMessage, limitedTopK)
+  }
+
+  return scored.slice(0, limitedTopK).map((item) => item.memory)
+}
+
+async function upsertUserMemory(
+  userId: number,
+  content: string,
+  source: MemorySource,
+  category?: MemoryCategory,
+  scope?: MemoryScope,
+  chatSessionId?: string,
+  expiresAt?: string,
+) {
   const normalizedContent = normalizeMemoryContent(content)
   const normalizedLookup = normalizeMemoryContentForLookup(normalizedContent)
+  const inferredCategory = category ?? inferMemoryCategory(normalizedContent)
+  const requestedScope = inferMemoryScope(normalizedContent, inferredCategory, chatSessionId, scope)
+  const inferredScope: MemoryScope = requestedScope === 'session' && !chatSessionId ? 'global' : requestedScope
+  const effectiveSessionId = inferredScope === 'session' ? chatSessionId ?? null : null
+  const effectiveExpiry = expiresAt ?? inferMemoryExpiry(normalizedContent, inferredCategory)
+
+  const existingByCategoryResult = await pgPool.query<{
+    id: string
+    content: string
+    memory_type: MemoryCategory
+  }>(
+    `
+    SELECT id, content, memory_type
+    FROM user_memories
+    WHERE user_id = $1
+      AND memory_type = $2
+      AND scope_type = $3
+      AND ((session_id IS NULL AND $4::uuid IS NULL) OR session_id = $4::uuid)
+      AND (expires_at IS NULL OR expires_at > NOW())
+    ORDER BY updated_at DESC
+    LIMIT 8
+    `,
+    [userId, inferredCategory, inferredScope, effectiveSessionId],
+  )
+
+  const newPreferenceAxis = inferredCategory === 'preferences' ? detectPreferenceAxis(normalizedContent) : null
+  const newPreferencePolarity =
+    inferredCategory === 'preferences' ? detectPreferencePolarity(normalizedContent) : 'neutral'
+
+  const conflictCandidate = existingByCategoryResult.rows.find((row) => {
+    const similarity = jaccardSimilarity(normalizedContent, row.content)
+    if (similarity >= 0.72) {
+      return true
+    }
+
+    if (inferredCategory !== 'preferences') {
+      return false
+    }
+
+    const existingAxis = detectPreferenceAxis(row.content)
+    const existingPolarity = detectPreferencePolarity(row.content)
+    return (
+      newPreferenceAxis !== null &&
+      existingAxis === newPreferenceAxis &&
+      existingPolarity !== 'neutral' &&
+      newPreferencePolarity !== 'neutral' &&
+      existingPolarity !== newPreferencePolarity
+    )
+  })
+
+  if (conflictCandidate) {
+    const updatedConflict = await pgPool.query<{
+      id: string
+      content: string
+      source: MemorySource
+      memory_type: MemoryCategory
+      scope_type: MemoryScope
+      session_id: string | null
+      confidence_score: number
+      expires_at: string | null
+      created_at: string
+      updated_at: string
+    }>(
+      `
+      UPDATE user_memories
+      SET
+        content = $3,
+        content_normalized = $4,
+        source = CASE
+          WHEN user_memories.source = 'manual' THEN 'manual'
+          ELSE $5
+        END,
+        memory_type = $6,
+        scope_type = $7,
+        session_id = $8,
+        expires_at = $9,
+        confidence_score = LEAST(1, GREATEST(COALESCE(user_memories.confidence_score, 0.6), CASE WHEN $5 = 'manual' THEN 0.85 ELSE 0.7 END)),
+        embedding_model = NULL,
+        embedding_json = NULL,
+        embedding_updated_at = NULL,
+        updated_at = NOW()
+      WHERE id = $1 AND user_id = $2
+      RETURNING id, content, source, memory_type, scope_type, session_id, confidence_score, expires_at, created_at, updated_at
+      `,
+      [
+        conflictCandidate.id,
+        userId,
+        normalizedContent,
+        normalizedLookup,
+        source,
+        inferredCategory,
+        inferredScope,
+        effectiveSessionId,
+        effectiveExpiry,
+      ],
+    )
+
+    const row = updatedConflict.rows[0]
+    return {
+      id: row.id,
+      content: row.content,
+      source: row.source,
+      category: row.memory_type,
+      scope: row.scope_type,
+      chatSessionId: row.session_id,
+      confidenceScore: row.confidence_score,
+      expiresAt: row.expires_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }
+  }
 
   const result = await pgPool.query<{
     id: string
     content: string
     source: MemorySource
+    memory_type: MemoryCategory
+    scope_type: MemoryScope
+    session_id: string | null
+    confidence_score: number
+    expires_at: string | null
     created_at: string
     updated_at: string
   }>(
     `
-    INSERT INTO user_memories (id, user_id, content, content_normalized, source, last_used_at)
-    VALUES ($1, $2, $3, $4, $5, NOW())
+    INSERT INTO user_memories (id, user_id, content, content_normalized, source, memory_type, scope_type, session_id, confidence_score, expires_at, importance_score, usage_count)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0)
     ON CONFLICT (user_id, content_normalized)
     DO UPDATE SET
       content = EXCLUDED.content,
@@ -779,11 +1566,27 @@ async function upsertUserMemory(userId: number, content: string, source: MemoryS
         WHEN user_memories.source = 'manual' THEN 'manual'
         ELSE EXCLUDED.source
       END,
-      last_used_at = NOW(),
+      memory_type = EXCLUDED.memory_type,
+      scope_type = EXCLUDED.scope_type,
+      session_id = EXCLUDED.session_id,
+      confidence_score = GREATEST(user_memories.confidence_score, EXCLUDED.confidence_score),
+      expires_at = EXCLUDED.expires_at,
       updated_at = NOW()
-    RETURNING id, content, source, created_at, updated_at
+    RETURNING id, content, source, memory_type, scope_type, session_id, confidence_score, expires_at, created_at, updated_at
     `,
-    [randomUUID(), userId, normalizedContent, normalizedLookup, source],
+    [
+      randomUUID(),
+      userId,
+      normalizedContent,
+      normalizedLookup,
+      source,
+      inferredCategory,
+      inferredScope,
+      effectiveSessionId,
+      source === 'manual' ? 0.85 : 0.6,
+      effectiveExpiry,
+      source === 'manual' ? 0.75 : MEMORY_DEFAULT_IMPORTANCE_SCORE,
+    ],
   )
 
   const row = result.rows[0]
@@ -791,19 +1594,45 @@ async function upsertUserMemory(userId: number, content: string, source: MemoryS
     id: row.id,
     content: row.content,
     source: row.source,
+    category: row.memory_type,
+    scope: row.scope_type,
+    chatSessionId: row.session_id,
+    confidenceScore: row.confidence_score,
+    expiresAt: row.expires_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
 }
 
-async function upsertUserMemories(userId: number, candidates: string[], source: MemorySource) {
+function mergeAndDedupeMemories(identityMemories: UserMemory[], rankedMemories: UserMemory[]) {
+  const merged = new Map<string, UserMemory>()
+
+  for (const memory of identityMemories) {
+    merged.set(memory.id, memory)
+  }
+
+  for (const memory of rankedMemories) {
+    if (!merged.has(memory.id)) {
+      merged.set(memory.id, memory)
+    }
+  }
+
+  return Array.from(merged.values())
+}
+
+async function upsertUserMemories(
+  userId: number,
+  candidates: string[],
+  source: MemorySource,
+  chatSessionId?: string,
+) {
   for (const candidate of candidates) {
     const normalized = normalizeMemoryContent(candidate)
     if (!normalized) {
       continue
     }
 
-    await upsertUserMemory(userId, normalized, source)
+    await upsertUserMemory(userId, normalized, source, undefined, undefined, chatSessionId)
   }
 }
 
@@ -1581,7 +2410,7 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
   const autoCandidates = await inferAutoMemoryCandidates(lastUserMessage?.content ?? '')
   if (autoCandidates.length > 0) {
     try {
-      await upsertUserMemories(payload.userId, autoCandidates, 'auto')
+      await upsertUserMemories(payload.userId, autoCandidates, 'auto', payload.chatSessionId)
     } catch (memoryError) {
       app.log.warn(
         {
@@ -1595,9 +2424,22 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
   }
 
   const personalizationProfile = await loadPersonalizationProfile(payload.userId)
-  const userMemories = await loadUserMemories(payload.userId)
+  const userMemories = await loadUserMemoryCandidates(payload.userId, payload.chatSessionId)
+  const identityMemories = userMemories.filter((memory) => memory.category === 'identity')
+  const nonIdentityMemories = userMemories.filter((memory) => memory.category !== 'identity')
+  const rankedNonIdentity = await selectRelevantMemories(
+    lastUserMessage?.content ?? '',
+    nonIdentityMemories,
+    MEMORY_RETRIEVAL_TOP_K,
+  )
+  const relevantMemories = mergeAndDedupeMemories(identityMemories, rankedNonIdentity)
+  if (relevantMemories.length > 0) {
+    await touchUserMemories(relevantMemories.map((memory) => memory.id))
+  }
   const personalizedSystemPrompt = buildPersonalizedSystemPrompt(personalizationProfile)
-  const memoryPrompt = buildMemoryPrompt(userMemories)
+  const memoryPromptPayload = buildMemoryPrompt(relevantMemories)
+  const memoryPrompt = memoryPromptPayload.prompt
+  const usedMemoryContext = memoryPromptPayload.usedMemories
 
   const completionRequest = {
     model: payload.model,
@@ -1776,6 +2618,7 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
                 ? sanitizeAttachmentsForStorage(message.attachments ?? [])
                 : [],
             citations: Array.isArray(message.citations) ? message.citations : [],
+            memoryContext: [] as UsedMemoryContext[],
             searchedWeb: Boolean(message.searchedWeb),
             thinking: null as string | null,
             model: modelUsed,
@@ -1785,6 +2628,7 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
           content: text,
           attachments: [],
           citations,
+          memoryContext: usedMemoryContext,
           searchedWeb: assistantSearchedWeb,
           thinking: modelThinking,
           model: modelUsed,
@@ -1802,10 +2646,11 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
             model,
             attachments_json,
             citations_json,
+            memory_context_json,
             searched_web,
             thinking_text
           )
-          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9)
+          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10)
           `,
           [
             payload.chatSessionId,
@@ -1815,6 +2660,7 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
             message.model,
             JSON.stringify(message.attachments),
             JSON.stringify(message.citations),
+            JSON.stringify(message.memoryContext),
             message.searchedWeb,
             message.thinking,
           ],
@@ -1829,8 +2675,9 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
         status = 'completed',
         response_text = $2,
         citations_json = $3::jsonb,
-        searched_web = $4,
-        thinking_text = $5,
+        memory_context_json = $4::jsonb,
+        searched_web = $5,
+        thinking_text = $6,
         error_message = NULL,
         updated_at = NOW(),
         completed_at = NOW()
@@ -1840,6 +2687,7 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
         payload.generationId,
         text,
         JSON.stringify(citations),
+        JSON.stringify(usedMemoryContext),
         assistantSearchedWeb,
         modelThinking,
       ],
@@ -2449,6 +3297,7 @@ app.get('/account/export', async (request, reply) => {
       model: string | null
       attachments_json: unknown
       citations_json: unknown
+      memory_context_json: unknown
       searched_web: boolean
       thinking_text: string | null
       created_at: string
@@ -2461,6 +3310,7 @@ app.get('/account/export', async (request, reply) => {
         model,
         attachments_json,
         citations_json,
+        memory_context_json,
         searched_web,
         thinking_text,
         created_at
@@ -2475,11 +3325,18 @@ app.get('/account/export', async (request, reply) => {
       id: string
       content: string
       source: MemorySource
+      memory_type: MemoryCategory
+      scope_type: MemoryScope
+      session_id: string | null
+      confidence_score: number | null
+      expires_at: string | null
+      importance_score: number | null
+      usage_count: number | null
       created_at: string
       updated_at: string
     }>(
       `
-      SELECT id, content, source, created_at, updated_at
+      SELECT id, content, source, memory_type, scope_type, session_id, confidence_score, expires_at, importance_score, usage_count, created_at, updated_at
       FROM user_memories
       WHERE user_id = $1
       ORDER BY updated_at DESC
@@ -2528,6 +3385,7 @@ app.get('/account/export', async (request, reply) => {
         model: message.model,
         attachments: Array.isArray(message.attachments_json) ? message.attachments_json : [],
         citations: Array.isArray(message.citations_json) ? message.citations_json : [],
+        memoryContext: Array.isArray(message.memory_context_json) ? message.memory_context_json : [],
         searchedWeb: message.searched_web,
         thinking: message.thinking_text,
         createdAt: message.created_at,
@@ -2536,6 +3394,13 @@ app.get('/account/export', async (request, reply) => {
         id: memory.id,
         content: memory.content,
         source: memory.source,
+        category: memory.memory_type,
+        scope: memory.scope_type,
+        chatSessionId: memory.session_id,
+        confidenceScore: memory.confidence_score,
+        expiresAt: memory.expires_at,
+        importanceScore: memory.importance_score,
+        usageCount: memory.usage_count,
         createdAt: memory.created_at,
         updatedAt: memory.updated_at,
       })),
@@ -2749,7 +3614,15 @@ app.post('/memory', async (request, reply) => {
       ? await summarizeMemoryContent(body.content, body.summarizeMode)
       : body.content
 
-    const memory = await upsertUserMemory(session.userId, contentToStore || body.content, body.source)
+    const memory = await upsertUserMemory(
+      session.userId,
+      contentToStore || body.content,
+      body.source,
+      body.category,
+      body.scope,
+      body.chatSessionId,
+      body.expiresAt,
+    )
     return reply.code(201).send({ memory })
   } catch (error) {
     if (error instanceof ZodError) {
@@ -2784,6 +3657,11 @@ app.patch('/memory/:memoryId', async (request, reply) => {
       id: string
       content: string
       source: MemorySource
+      memory_type: MemoryCategory
+      scope_type: MemoryScope
+      session_id: string | null
+      confidence_score: number
+      expires_at: string | null
       created_at: string
       updated_at: string
     }>(
@@ -2792,12 +3670,29 @@ app.patch('/memory/:memoryId', async (request, reply) => {
       SET
         content = $3,
         content_normalized = $4,
+        memory_type = $5,
+        scope_type = $6,
+        session_id = $7,
+        expires_at = $8,
+        confidence_score = LEAST(1, GREATEST(COALESCE(confidence_score, 0.6), 0.85)),
         source = 'manual',
+        embedding_model = NULL,
+        embedding_json = NULL,
+        embedding_updated_at = NULL,
         updated_at = NOW()
       WHERE id = $1 AND user_id = $2
-      RETURNING id, content, source, created_at, updated_at
+      RETURNING id, content, source, memory_type, scope_type, session_id, confidence_score, expires_at, created_at, updated_at
       `,
-      [memoryId, session.userId, normalizedContent, normalizedLookup],
+      [
+        memoryId,
+        session.userId,
+        normalizedContent,
+        normalizedLookup,
+        body.category ?? inferMemoryCategory(body.content),
+        body.scope ?? inferMemoryScope(body.content, body.category ?? inferMemoryCategory(body.content), body.chatSessionId),
+        body.scope === 'session' ? body.chatSessionId ?? null : null,
+        body.expiresAt ?? inferMemoryExpiry(body.content, body.category ?? inferMemoryCategory(body.content)),
+      ],
     )
 
     const updated = result.rows[0]
@@ -2812,6 +3707,11 @@ app.patch('/memory/:memoryId', async (request, reply) => {
         id: updated.id,
         content: updated.content,
         source: updated.source,
+        category: updated.memory_type,
+        scope: updated.scope_type,
+        chatSessionId: updated.session_id,
+        confidenceScore: updated.confidence_score,
+        expiresAt: updated.expires_at,
         createdAt: updated.created_at,
         updatedAt: updated.updated_at,
       },
@@ -2833,6 +3733,83 @@ app.patch('/memory/:memoryId', async (request, reply) => {
     request.log.error(error)
     return reply.code(500).send({
       message: 'Unable to update memory',
+    })
+  }
+})
+
+app.post('/memory/:memoryId/feedback', async (request, reply) => {
+  try {
+    const session = await getSessionFromRequest(request)
+    if (!session) {
+      return reply.code(401).send({
+        message: 'Unauthorized',
+      })
+    }
+
+    const { memoryId } = memoryIdParamSchema.parse(request.params)
+    const body = memoryFeedbackSchema.parse(request.body)
+    const isUpvote = body.feedback === 'up'
+
+    const result = await pgPool.query<{
+      id: string
+      content: string
+      source: MemorySource
+      memory_type: MemoryCategory
+      scope_type: MemoryScope
+      session_id: string | null
+      confidence_score: number
+      expires_at: string | null
+      importance_score: number
+      usage_count: number
+      created_at: string
+      updated_at: string
+    }>(
+      `
+      UPDATE user_memories
+      SET
+        importance_score = LEAST(1, GREATEST(0, COALESCE(importance_score, 0.5) + $3::double precision)),
+        confidence_score = LEAST(1, GREATEST(0, COALESCE(confidence_score, 0.6) + $4::double precision)),
+        updated_at = NOW()
+      WHERE id = $1 AND user_id = $2
+      RETURNING id, content, source, memory_type, scope_type, session_id, confidence_score, expires_at, importance_score, usage_count, created_at, updated_at
+      `,
+      [memoryId, session.userId, isUpvote ? 0.08 : -0.08, isUpvote ? 0.06 : -0.06],
+    )
+
+    const updated = result.rows[0]
+    if (!updated) {
+      return reply.code(404).send({
+        message: 'Memory not found',
+      })
+    }
+
+    return reply.send({
+      memory: {
+        id: updated.id,
+        content: updated.content,
+        source: updated.source,
+        category: updated.memory_type,
+        scope: updated.scope_type,
+        chatSessionId: updated.session_id,
+        confidenceScore: updated.confidence_score,
+        expiresAt: updated.expires_at,
+        importanceScore: updated.importance_score,
+        usageCount: updated.usage_count,
+        createdAt: updated.created_at,
+        updatedAt: updated.updated_at,
+      },
+    })
+  } catch (error) {
+    if (error instanceof ZodError) {
+      return reply.code(400).send({
+        message: 'Invalid memory feedback payload',
+        issues: error.issues,
+      })
+    }
+
+    request.log.error(error)
+    return reply.code(500).send({
+      message: 'Unable to update memory feedback',
     })
   }
 })
@@ -3051,11 +4028,12 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
       content: string
       attachments_json: unknown
       citations_json: unknown
+      memory_context_json: unknown
       searched_web: boolean
       thinking_text: string | null
     }>(
       `
-      SELECT role, content, attachments_json, citations_json, searched_web, thinking_text
+      SELECT role, content, attachments_json, citations_json, memory_context_json, searched_web, thinking_text
       FROM chat_messages
       WHERE conversation_id = $1
       ORDER BY created_at ASC, id ASC
@@ -3068,6 +4046,7 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
       status: 'queued' | 'in_progress'
       response_text: string
       citations_json: unknown
+      memory_context_json: unknown
       searched_web: boolean
       thinking_text: string | null
       error_message: string | null
@@ -3076,7 +4055,7 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
       completed_at: string | null
     }>(
       `
-      SELECT id, status, response_text, citations_json, searched_web, thinking_text, error_message, created_at, updated_at, completed_at
+      SELECT id, status, response_text, citations_json, memory_context_json, searched_web, thinking_text, error_message, created_at, updated_at, completed_at
       FROM chat_generations
       WHERE conversation_id = $1 AND user_id = $2 AND status IN ('queued', 'in_progress')
       ORDER BY created_at DESC
@@ -3103,6 +4082,9 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
         ...(Array.isArray(message.citations_json) && message.citations_json.length > 0
           ? { citations: message.citations_json }
           : {}),
+        ...(Array.isArray(message.memory_context_json) && message.memory_context_json.length > 0
+          ? { memoryContext: message.memory_context_json }
+          : {}),
         searchedWeb: Boolean(message.searched_web),
         ...(typeof message.thinking_text === 'string' && message.thinking_text.trim()
           ? { thinking: message.thinking_text }
@@ -3115,6 +4097,9 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
               status: activeGeneration.status,
               content: activeGeneration.response_text,
               citations: Array.isArray(activeGeneration.citations_json) ? activeGeneration.citations_json : [],
+              memoryContext: Array.isArray(activeGeneration.memory_context_json)
+                ? activeGeneration.memory_context_json
+                : [],
               searchedWeb: Boolean(activeGeneration.searched_web),
               ...(typeof activeGeneration.thinking_text === 'string' && activeGeneration.thinking_text.trim()
                 ? { thinking: activeGeneration.thinking_text }
@@ -3460,6 +4445,7 @@ app.get('/chat/generations/:generationId', async (request, reply) => {
       status: 'queued' | 'in_progress' | 'completed' | 'failed'
       response_text: string
       citations_json: unknown
+      memory_context_json: unknown
       searched_web: boolean
       thinking_text: string | null
       error_message: string | null
@@ -3475,6 +4461,7 @@ app.get('/chat/generations/:generationId', async (request, reply) => {
         g.status,
         g.response_text,
         g.citations_json,
+        g.memory_context_json,
         g.searched_web,
         g.thinking_text,
         g.error_message,
@@ -3505,6 +4492,7 @@ app.get('/chat/generations/:generationId', async (request, reply) => {
         status: generation.status,
         content: generation.response_text,
         citations: Array.isArray(generation.citations_json) ? generation.citations_json : [],
+        memoryContext: Array.isArray(generation.memory_context_json) ? generation.memory_context_json : [],
         searchedWeb: Boolean(generation.searched_web),
         ...(typeof generation.thinking_text === 'string' && generation.thinking_text.trim()
           ? { thinking: generation.thinking_text }

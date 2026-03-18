@@ -116,6 +116,7 @@ export async function initializeDatabase() {
       model TEXT,
       attachments_json JSONB NOT NULL DEFAULT '[]'::jsonb,
       citations_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      memory_context_json JSONB NOT NULL DEFAULT '[]'::jsonb,
       searched_web BOOLEAN NOT NULL DEFAULT FALSE,
       thinking_text TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -130,6 +131,11 @@ export async function initializeDatabase() {
   await pgPool.query(`
     ALTER TABLE chat_messages
     ADD COLUMN IF NOT EXISTS citations_json JSONB NOT NULL DEFAULT '[]'::jsonb
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE chat_messages
+    ADD COLUMN IF NOT EXISTS memory_context_json JSONB NOT NULL DEFAULT '[]'::jsonb
   `)
 
   await pgPool.query(`
@@ -154,6 +160,7 @@ export async function initializeDatabase() {
       status TEXT NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'failed')),
       response_text TEXT NOT NULL DEFAULT '',
       citations_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      memory_context_json JSONB NOT NULL DEFAULT '[]'::jsonb,
       searched_web BOOLEAN NOT NULL DEFAULT FALSE,
       thinking_text TEXT,
       error_message TEXT,
@@ -161,6 +168,11 @@ export async function initializeDatabase() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       completed_at TIMESTAMPTZ
     )
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE chat_generations
+    ADD COLUMN IF NOT EXISTS memory_context_json JSONB NOT NULL DEFAULT '[]'::jsonb
   `)
 
   await pgPool.query(`
@@ -185,6 +197,13 @@ export async function initializeDatabase() {
       content TEXT NOT NULL,
       content_normalized TEXT NOT NULL,
       source TEXT NOT NULL CHECK (source IN ('manual', 'auto')),
+      memory_type TEXT NOT NULL DEFAULT 'constraints' CHECK (memory_type IN ('identity', 'preferences', 'goals', 'constraints')),
+      scope_type TEXT NOT NULL DEFAULT 'global' CHECK (scope_type IN ('global', 'session')),
+      session_id UUID,
+      confidence_score DOUBLE PRECISION NOT NULL DEFAULT 0.6,
+      expires_at TIMESTAMPTZ,
+      importance_score DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+      usage_count INTEGER NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       last_used_at TIMESTAMPTZ
@@ -209,6 +228,78 @@ export async function initializeDatabase() {
   await pgPool.query(`
     ALTER TABLE user_memories
     ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD COLUMN IF NOT EXISTS embedding_model TEXT
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD COLUMN IF NOT EXISTS embedding_json JSONB
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD COLUMN IF NOT EXISTS embedding_updated_at TIMESTAMPTZ
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD COLUMN IF NOT EXISTS importance_score DOUBLE PRECISION NOT NULL DEFAULT 0.5
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD COLUMN IF NOT EXISTS usage_count INTEGER NOT NULL DEFAULT 0
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD COLUMN IF NOT EXISTS scope_type TEXT NOT NULL DEFAULT 'global'
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD COLUMN IF NOT EXISTS session_id UUID
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD COLUMN IF NOT EXISTS confidence_score DOUBLE PRECISION NOT NULL DEFAULT 0.6
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    DROP CONSTRAINT IF EXISTS user_memories_scope_type_check
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD CONSTRAINT user_memories_scope_type_check CHECK (scope_type IN ('global', 'session'))
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE user_memories
+    ADD COLUMN IF NOT EXISTS memory_type TEXT NOT NULL DEFAULT 'constraints'
+  `)
+
+  await pgPool.query(`
+    UPDATE user_memories
+    SET importance_score = 0.5
+    WHERE importance_score IS NULL
+  `)
+
+  await pgPool.query(`
+    UPDATE user_memories
+    SET usage_count = 0
+    WHERE usage_count IS NULL
   `)
 
   await pgPool.query(`

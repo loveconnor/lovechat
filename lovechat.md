@@ -278,6 +278,39 @@ Memory quality rules (current behavior):
 - Summaries are length-bounded for context-size and cost control
 - Memory dedupe is case-insensitive and whitespace-normalized
 
+Memory categories (current behavior):
+
+- `identity` example: "I'm a CS student"
+- `preferences` example: "I like short answers"
+- `goals` example: "I'm building a startup"
+- `constraints` example: "I use Next.js + TS"
+- Category is inferred heuristically by backend when not explicitly provided
+
+Memory conflict resolution (current behavior):
+
+- New memories can override existing category peers when conflict is detected
+- Preference conflicts (for example concise vs detailed) are treated as replacements, not additive duplicates
+- Replacement updates existing memory content and resets embedding cache for re-indexing
+- Confidence score is increased when a manual override occurs
+
+Memory retrieval and prompt injection (current behavior):
+
+- Backend no longer injects all stored memories into every request
+- Before each generation, backend embeds the latest user message and selects top-K relevant memories
+- Ranking uses a composite score: `score = relevance + importance + recency`
+- Relevance comes from semantic similarity (or lexical overlap fallback)
+- Importance combines a stored importance score with frequency-of-use signal
+- Recency is derived from `last_used_at` with time-decay behavior
+- `identity` memories are always injected
+- `preferences` memories are injected as tone/style instructions
+- `goals` memories are injected to steer suggestions and next steps
+- `constraints` memories are injected as implementation/tool boundaries
+- Selected memories are injected into the system prompt as context-aware long-term memory
+- Retrieved memories update `last_used_at` and increment usage frequency counters
+- Before injection, memory prompt assembly enforces a hard token budget
+- Memory lines are packed in priority order until budget is exhausted (instead of injecting all selected items)
+- Session scope is respected: retrieval uses global memory plus same-session memory
+
 ## 7. AI Orchestration and Model Behavior
 
 ## 7.1 Model Resolution Rules
@@ -371,6 +404,32 @@ Pipeline:
 5. Deduplicate candidates and cap count.
 6. Upsert candidates to `user_memories` with source `auto`.
 
+Memory retrieval for generation context runs after inference/upsert.
+
+Retrieval pipeline:
+
+1. Load recent memory candidates for the user.
+2. Embed the latest user message.
+3. Ensure memory embeddings exist (generate and cache when missing/stale).
+4. Compute relevance per candidate (cosine similarity, or lexical overlap fallback).
+5. Compute importance and recency components for each candidate.
+6. Rank by composite score: `score = relevance + importance + recency` and select top-K.
+7. Update usage metadata (`last_used_at`, usage count) for selected memories.
+8. Estimate token size per memory and pack entries until memory token budget is reached.
+9. Inject packed memories into the long-term memory system prompt block.
+
+Temporal behavior:
+
+- Non-identity memory can expire via `expires_at`
+- Scoring includes temporal decay on importance (category-specific half-life)
+- Expired memory is excluded from retrieval context
+
+Feedback loop:
+
+- Memory quality can be tuned via explicit feedback endpoint
+- Positive feedback increases importance/confidence scores
+- Negative feedback decreases importance/confidence scores
+
 Selection intent:
 
 - Include durable identity facts, preferences, recurring constraints, and ongoing goals.
@@ -421,6 +480,16 @@ Selection intent:
 - `content` (stored durable memory text)
 - `content_normalized` (dedupe key)
 - `source` (`manual` or `auto`)
+- `memory_type` (`identity`, `preferences`, `goals`, `constraints`)
+- `scope_type` (`global`, `session`)
+- `session_id` (set for session-scoped memory)
+- `confidence_score` (confidence for conflict handling and ranking)
+- `expires_at` (optional expiry timestamp)
+- `importance_score` (stored importance prior for ranking)
+- `usage_count` (frequency of retrieval/use)
+- `embedding_model` (embedding model used for cached vector)
+- `embedding_json` (cached embedding vector)
+- `embedding_updated_at` (when embedding cache was last refreshed)
 - `created_at`, `updated_at`, `last_used_at`
 
 ## 8.2 Chat History Control
@@ -512,9 +581,14 @@ Redis is used for:
   - Returns current long-term memory entries
 - `POST /memory`
   - Creates or upserts memory entry
+  - Accepts optional `category` (`identity`, `preferences`, `goals`, `constraints`)
+  - Accepts optional `scope` (`global`, `session`), `chatSessionId`, and `expiresAt`
   - Supports optional summarize flags/modes for compressed durable memory storage
 - `PATCH /memory/:memoryId`
   - Updates memory content
+  - Accepts optional `category` to reclassify memory type
+- `POST /memory/:memoryId/feedback`
+  - Accepts `feedback` (`up` or `down`) to tune memory importance/confidence
 - `DELETE /memory/:memoryId`
   - Deletes memory entry
 

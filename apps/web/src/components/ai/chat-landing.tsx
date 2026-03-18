@@ -41,12 +41,24 @@ type ChatAttachment = {
   imageDataUrl?: string
 }
 
+type MemoryCategory = 'identity' | 'preferences' | 'goals' | 'constraints'
+type MemoryUsageReason = 'identity' | 'style_preference' | 'goal_alignment' | 'constraint_guardrail'
+
+type UsedMemoryContext = {
+  id: string
+  content: string
+  category: MemoryCategory
+  reason: MemoryUsageReason
+  score?: number
+}
+
 type ChatMessage = {
   id: string
   role: ChatRole
   content: string
   attachments?: ChatAttachment[]
   citations?: SerializableCitation[]
+  memoryContext?: UsedMemoryContext[]
   searchedWeb?: boolean
 }
 
@@ -80,6 +92,7 @@ type ChatGenerationPayload = {
   status: 'queued' | 'in_progress' | 'completed' | 'failed'
   content: string
   citations?: unknown
+  memoryContext?: unknown
   searchedWeb?: boolean
   thinking?: string
   errorMessage?: string
@@ -111,6 +124,7 @@ type ChatSessionResponse = {
     content: string
     attachments?: unknown
     citations?: unknown
+    memoryContext?: unknown
     searchedWeb?: boolean
     thinking?: string
   }>
@@ -119,6 +133,7 @@ type ChatSessionResponse = {
     status: 'queued' | 'in_progress'
     content: string
     citations?: unknown
+    memoryContext?: unknown
     searchedWeb?: boolean
     thinking?: string
     errorMessage?: string
@@ -315,6 +330,92 @@ function normalizeCitations(input: unknown): SerializableCitation[] {
   return input
     .map((citation) => safeParseSerializableCitation(citation))
     .filter((citation): citation is SerializableCitation => citation !== null)
+}
+
+function normalizeMemoryContext(input: unknown): UsedMemoryContext[] {
+  if (!Array.isArray(input)) {
+    return []
+  }
+
+  return input
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null
+      }
+
+      const candidate = item as {
+        id?: unknown
+        content?: unknown
+        category?: unknown
+        reason?: unknown
+        score?: unknown
+      }
+
+      const id = typeof candidate.id === 'string' ? candidate.id : ''
+      const content = typeof candidate.content === 'string' ? candidate.content.trim() : ''
+      const category =
+        candidate.category === 'identity' ||
+        candidate.category === 'preferences' ||
+        candidate.category === 'goals' ||
+        candidate.category === 'constraints'
+          ? candidate.category
+          : null
+      const reason =
+        candidate.reason === 'identity' ||
+        candidate.reason === 'style_preference' ||
+        candidate.reason === 'goal_alignment' ||
+        candidate.reason === 'constraint_guardrail'
+          ? candidate.reason
+          : null
+
+      if (!id || !content || !category || !reason) {
+        return null
+      }
+
+      return {
+        id,
+        content,
+        category,
+        reason,
+        ...(typeof candidate.score === 'number' && Number.isFinite(candidate.score)
+          ? { score: candidate.score }
+          : {}),
+      }
+    })
+    .filter((item): item is UsedMemoryContext => item !== null)
+}
+
+function memoryReasonLabel(reason: MemoryUsageReason) {
+  if (reason === 'style_preference') {
+    return 'Style preference'
+  }
+
+  if (reason === 'goal_alignment') {
+    return 'Goal alignment'
+  }
+
+  if (reason === 'constraint_guardrail') {
+    return 'Constraint guardrail'
+  }
+
+  return 'Identity'
+}
+
+function buildMemoryUsageIndicatorLabel(memories: UsedMemoryContext[]) {
+  const categories = new Set(memories.map((memory) => memory.category))
+  if (categories.has('preferences')) {
+    return 'Using your preferences'
+  }
+
+  if (categories.has('goals')) {
+    return 'Using your goals'
+  }
+
+  if (categories.has('constraints')) {
+    return 'Respecting your constraints'
+  }
+
+  return 'Using your memory context'
 }
 
 function normalizeAttachments(input: unknown): ChatAttachment[] {
@@ -558,7 +659,7 @@ function extractAssistantImageUrls(content: string) {
   const seen = new Set<string>()
 
   for (const match of content.matchAll(assistantImageMarkdownRegex)) {
-    const url = (match[1] ?? match[2] ?? '').trim()
+    const url = (match[1] || match[2] || '').trim()
     if (!url || seen.has(url)) {
       continue
     }
@@ -568,7 +669,7 @@ function extractAssistantImageUrls(content: string) {
   }
 
   for (const match of content.matchAll(assistantImageDataUrlRegex)) {
-    const url = (match[0] ?? '').trim()
+    const url = match[0].trim()
     if (!url || seen.has(url)) {
       continue
     }
@@ -578,7 +679,7 @@ function extractAssistantImageUrls(content: string) {
   }
 
   for (const match of content.matchAll(assistantImageHttpUrlRegex)) {
-    const url = (match[0] ?? '').trim()
+    const url = match[0].trim()
     if (!url || seen.has(url)) {
       continue
     }
@@ -625,7 +726,7 @@ function inferImageExtensionFromUrl(url: string) {
     return raw === 'jpeg' ? 'jpg' : raw
   }
 
-  const path = url.split('?')[0] ?? ''
+  const path = url.split('?')[0]
   const extMatch = path.match(/\.([a-zA-Z0-9]+)$/)
   const ext = extMatch?.[1]?.toLowerCase()
   if (!ext) {
@@ -672,7 +773,7 @@ async function downloadAssistantImage(url: string) {
 }
 
 async function copyAssistantImageToClipboard(url: string) {
-  if (!navigator.clipboard || typeof ClipboardItem === 'undefined') {
+  if (typeof ClipboardItem === 'undefined') {
     throw new Error('Image clipboard is not supported in this browser')
   }
 
@@ -858,6 +959,7 @@ function createMessage(
   metadata?: {
     attachments?: ChatAttachment[]
     citations?: SerializableCitation[]
+    memoryContext?: UsedMemoryContext[]
     searchedWeb?: boolean
   },
 ): ChatMessage {
@@ -867,6 +969,7 @@ function createMessage(
     content,
     ...(metadata?.attachments ? { attachments: metadata.attachments } : {}),
     ...(metadata?.citations ? { citations: metadata.citations } : {}),
+    ...(metadata?.memoryContext ? { memoryContext: metadata.memoryContext } : {}),
     ...(metadata?.searchedWeb !== undefined ? { searchedWeb: metadata.searchedWeb } : {}),
   }
 }
@@ -1191,10 +1294,12 @@ function ChatLanding() {
   function materializeMessages(items: ChatSessionResponse['messages']) {
     return items.map((item) => {
       const citations = normalizeCitations(item.citations)
+      const memoryContext = normalizeMemoryContext(item.memoryContext)
       const attachments = normalizeAttachments(item.attachments)
       return createMessage(item.role, item.content, {
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(citations.length > 0 ? { citations } : {}),
+        ...(memoryContext.length > 0 ? { memoryContext } : {}),
         ...(item.searchedWeb !== undefined ? { searchedWeb: item.searchedWeb } : {}),
       })
     })
@@ -1337,6 +1442,7 @@ function ChatLanding() {
 
       if (generation.status === 'completed') {
         const citations = normalizeCitations(generation.citations)
+        const memoryContext = normalizeMemoryContext(generation.memoryContext)
         const searchedWeb = Boolean(generation.searchedWeb ?? citations.length > 0)
         const finalizedContent = generation.content || ''
 
@@ -1347,6 +1453,7 @@ function ChatLanding() {
                   ...message,
                   content: finalizedContent,
                   ...(citations.length > 0 ? { citations } : {}),
+                  ...(memoryContext.length > 0 ? { memoryContext } : {}),
                   searchedWeb,
                 }
               : message,
@@ -2503,9 +2610,6 @@ function ChatLanding() {
     const entries = await Promise.all(
       attachments.map(async (attachment, index) => {
         const sourceFile = files[index]
-        if (!sourceFile) {
-          return null
-        }
 
         if (sourceFile.size > attachmentPreviewDataUrlLimit || !shouldCacheAttachmentPreview(sourceFile)) {
           return null
@@ -3083,10 +3187,29 @@ function ChatLanding() {
                           const hasRenderableContent = parsedContent.markdown.trim().length > 0 || imageUrls.length > 0
                           const hasVisualizations = parsedContent.charts.length > 0
                           const hasCitations = Boolean(message.citations && message.citations.length > 0)
+                          const memoryContext = message.memoryContext ?? []
+                          const hasMemoryContext = memoryContext.length > 0
                           const showActions = hasRenderableContent || hasCitations || hasVisualizations
 
                           return (
                             <>
+                        {hasMemoryContext ? (
+                          <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[11px] text-gray-500">
+                            <span className="rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 font-medium">
+                              {buildMemoryUsageIndicatorLabel(memoryContext)}
+                            </span>
+                            {memoryContext.slice(0, 4).map((memory) => (
+                              <span
+                                key={`${message.id}-memory-${memory.id}`}
+                                title={`${memoryReasonLabel(memory.reason)}: ${memory.content}`}
+                                className="cursor-help rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px] text-gray-600"
+                              >
+                                {memory.category}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+
                         {hasRenderableContent ? (
                           <div data-export-assistant-markdown>
                             <Markdown className="prose-p:my-3 first:prose-p:mt-0 last:prose-p:mb-0">
