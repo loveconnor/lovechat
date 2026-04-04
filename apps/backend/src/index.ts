@@ -42,6 +42,26 @@ Rules:
 - You may include normal explanation text before and after the chart packet.
 - If an interactive follow-up is useful, add actions with short labels and a precise prompt the assistant can execute on click.`
 
+const canvasSystemPrompt = `Canvas mode is enabled for this request.
+
+When the conversation already contains a canvas code block and the user asks for changes:
+- Treat that existing canvas as the file you are editing.
+- Preserve unchanged structure, sections, and styling unless the user clearly asks for a broader redesign.
+- Apply focused edits instead of replacing the entire concept with a different page.
+- Prefer returning a patch against the existing canvas instead of regenerating the whole file.
+- Use this exact patch format when making targeted edits:
+  \`\`\`lovechat-canvas-patch
+  {"operations":[{"search":"exact old text","replace":"new text"}]}
+  \`\`\`
+- Each search value must be copied exactly from the existing canvas and should be the smallest unique block needed for the change.
+- Order operations exactly as they should be applied.
+- Never return only the changed CSS, HTML, or JS fragment in a normal code fence for a canvas follow-up. Use a patch block for partial edits.
+- Only return a full updated code block when the user explicitly wants a rewrite or the change is too broad for a small patch.
+- Do not return an empty canvas, placeholder canvas, or preference questionnaire when a concrete revision was requested.
+- If the user says they dislike the result, infer the most likely improvements from context and revise the existing canvas directly.
+
+Keep any explanation brief and place it before the patch block or final code block.`
+
 const learningModeSystemPrompt = `# ROLE AND IDENTITY
 You are Leo, operating in "Learning Mode" within the LoveChat app. You are an expert tutor, a patient mentor, and an insightful academic coach. Your primary goal is to facilitate deep, lasting understanding and critical thinking.
 You are encouraging, highly observant, and adaptable. You believe that struggling with a problem is a core part of learning. Your tone is warm, supportive, and inquisitive.
@@ -137,10 +157,15 @@ const chatAttachmentSchema = z.object({
     .optional(),
 })
 
+const chatCanvasContextSchema = z.object({
+  question: z.string().trim().min(1).max(8_000),
+})
+
 const chatMessageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant']),
   content: z.string().trim().min(1).max(8_000),
   attachments: z.array(chatAttachmentSchema).max(10).optional(),
+  canvasContext: chatCanvasContextSchema.optional(),
   citations: z.unknown().optional(),
   searchedWeb: z.boolean().optional(),
 })
@@ -149,9 +174,30 @@ const chatCompletionSchema = z.object({
   model: z.string().trim().min(1).max(80).optional(),
   useWebSearch: z.boolean().optional(),
   useLearningMode: z.boolean().optional(),
+  canvasQuestion: z.string().trim().min(1).max(8_000).optional(),
   chatSessionId: z.string().uuid().optional(),
   messages: z.array(chatMessageSchema).min(1).max(30),
 })
+
+type ChatCanvasContext = {
+  question: string
+}
+
+function sanitizeCanvasContextForStorage(input: unknown): ChatCanvasContext | null {
+  if (!input || typeof input !== 'object') {
+    return null
+  }
+
+  const questionCandidate = (input as { question?: unknown }).question
+  const question = typeof questionCandidate === 'string' ? questionCandidate.trim() : ''
+  if (!question) {
+    return null
+  }
+
+  return {
+    question: question.slice(0, 8_000),
+  }
+}
 
 const chatSessionIdParamSchema = z.object({
   sessionId: z.string().uuid(),
@@ -1783,6 +1829,515 @@ function toOpenAIInputMessage(message: z.infer<typeof chatMessageSchema>) {
   }
 }
 
+type ExtractedCodeFence = {
+  code: string
+  language: string
+  markdownWithoutCode: string
+}
+
+type CanvasPatchOperation = {
+  search: string
+  replace: string
+}
+
+function extractFirstCodeFence(content: string): ExtractedCodeFence {
+  const openMatch = /```([^\r\n`]*)[\r\n]/.exec(content)
+  if (!openMatch || openMatch.index === undefined) {
+    return {
+      code: '',
+      language: '',
+      markdownWithoutCode: content.trim(),
+    }
+  }
+
+  const fenceStart = openMatch.index
+  const codeStart = fenceStart + openMatch[0].length
+  const closeIndex = content.indexOf('```', codeStart)
+  const language = openMatch[1]?.trim().toLowerCase() ?? ''
+
+  if (closeIndex === -1) {
+    return {
+      code: content.slice(codeStart).trim(),
+      language,
+      markdownWithoutCode: content.slice(0, fenceStart).trim(),
+    }
+  }
+
+  return {
+    code: content.slice(codeStart, closeIndex).trim(),
+    language,
+    markdownWithoutCode: `${content.slice(0, fenceStart)}${content.slice(closeIndex + 3)}`.trim(),
+  }
+}
+
+function formatCodeFence(code: string, language?: string) {
+  const normalizedLanguage = language?.trim() || 'html'
+  return `\`\`\`${normalizedLanguage}\n${code}\n\`\`\``
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function extractCanvasPatch(content: string): { operations: CanvasPatchOperation[]; markdownWithoutPatch: string } | null {
+  const patchMatch = content.match(/```lovechat-canvas-patch\s*([\s\S]*?)```/i)
+  if (!patchMatch) {
+    return null
+  }
+
+  let parsedPayload: unknown
+  try {
+    parsedPayload = JSON.parse((patchMatch[1] ?? '').trim())
+  } catch {
+    return null
+  }
+
+  const candidateOperations =
+    parsedPayload &&
+    typeof parsedPayload === 'object' &&
+    Array.isArray((parsedPayload as { operations?: unknown }).operations)
+      ? (parsedPayload as { operations: unknown[] }).operations
+      : null
+
+  if (!candidateOperations) {
+    return null
+  }
+
+  const operations = candidateOperations
+    .map((operation) => {
+      if (!operation || typeof operation !== 'object') {
+        return null
+      }
+
+      const search = typeof (operation as { search?: unknown }).search === 'string'
+        ? (operation as { search: string }).search
+        : ''
+      const replace = typeof (operation as { replace?: unknown }).replace === 'string'
+        ? (operation as { replace: string }).replace
+        : ''
+
+      if (!search) {
+        return null
+      }
+
+      return {
+        search,
+        replace,
+      }
+    })
+    .filter((operation): operation is CanvasPatchOperation => operation !== null)
+
+  if (operations.length === 0) {
+    return null
+  }
+
+  return {
+    operations,
+    markdownWithoutPatch: content.replace(patchMatch[0], '').trim(),
+  }
+}
+
+function applyCanvasPatch(source: string, operations: CanvasPatchOperation[]) {
+  let nextSource = source
+
+  for (const operation of operations) {
+    const index = nextSource.indexOf(operation.search)
+    if (index === -1) {
+      return null
+    }
+
+    nextSource =
+      `${nextSource.slice(0, index)}${operation.replace}${nextSource.slice(index + operation.search.length)}`
+  }
+
+  return nextSource
+}
+
+function findMatchingBraceIndex(source: string, openBraceIndex: number) {
+  let depth = 0
+
+  for (let index = openBraceIndex; index < source.length; index += 1) {
+    const character = source[index]
+    if (character === '{') {
+      depth += 1
+      continue
+    }
+    if (character === '}') {
+      depth -= 1
+      if (depth === 0) {
+        return index
+      }
+    }
+  }
+
+  return -1
+}
+
+type CssSnippetBlock = {
+  header: string
+  text: string
+}
+
+function extractCssSnippetBlocks(snippet: string): CssSnippetBlock[] {
+  const blocks: CssSnippetBlock[] = []
+  let cursor = 0
+
+  while (cursor < snippet.length) {
+    while (cursor < snippet.length && /\s/.test(snippet[cursor] ?? '')) {
+      cursor += 1
+    }
+
+    if (cursor >= snippet.length) {
+      break
+    }
+
+    const braceIndex = snippet.indexOf('{', cursor)
+    if (braceIndex === -1) {
+      break
+    }
+
+    const header = snippet.slice(cursor, braceIndex).trim()
+    if (!header) {
+      cursor = braceIndex + 1
+      continue
+    }
+
+    const blockEnd = findMatchingBraceIndex(snippet, braceIndex)
+    if (blockEnd === -1) {
+      break
+    }
+
+    const text = snippet.slice(cursor, blockEnd + 1).trim()
+    if (text) {
+      blocks.push({ header, text })
+    }
+
+    cursor = blockEnd + 1
+  }
+
+  return blocks
+}
+
+function findCssBlockRange(source: string, header: string): { start: number; end: number } | null {
+  const pattern = new RegExp(`${escapeRegExp(header)}\\s*\\{`, 'g')
+  const match = pattern.exec(source)
+  if (!match || match.index === undefined) {
+    return null
+  }
+
+  const braceIndex = source.indexOf('{', match.index)
+  if (braceIndex === -1) {
+    return null
+  }
+
+  const blockEnd = findMatchingBraceIndex(source, braceIndex)
+  if (blockEnd === -1) {
+    return null
+  }
+
+  let end = blockEnd + 1
+  while (end < source.length && /\s/.test(source[end] ?? '')) {
+    end += 1
+  }
+
+  return {
+    start: match.index,
+    end,
+  }
+}
+
+function mergeCssSnippetIntoCss(source: string, snippet: string) {
+  const blocks = extractCssSnippetBlocks(snippet)
+  if (blocks.length === 0) {
+    return null
+  }
+
+  let nextSource = source
+
+  for (const block of blocks) {
+    const range = findCssBlockRange(nextSource, block.header)
+
+    if (range) {
+      nextSource = `${nextSource.slice(0, range.start)}${block.text}\n${nextSource.slice(range.end)}`
+      continue
+    }
+
+    const trimmedSource = nextSource.trimEnd()
+    nextSource = `${trimmedSource}\n\n${block.text}\n`
+  }
+
+  return nextSource
+}
+
+function mergeCssSnippetIntoHtml(source: string, snippet: string) {
+  const stylePattern = /<style\b[^>]*>([\s\S]*?)<\/style>/i
+  const match = stylePattern.exec(source)
+  if (match && match.index !== undefined) {
+    const styleContent = match[1] ?? ''
+    const mergedStyle = mergeCssSnippetIntoCss(styleContent, snippet)
+    if (!mergedStyle) {
+      return null
+    }
+
+    return `${source.slice(0, match.index)}<style>${mergedStyle}</style>${source.slice(match.index + match[0].length)}`
+  }
+
+  const headCloseIndex = source.search(/<\/head>/i)
+  if (headCloseIndex !== -1) {
+    return `${source.slice(0, headCloseIndex)}<style>\n${snippet.trim()}\n</style>\n${source.slice(headCloseIndex)}`
+  }
+
+  return null
+}
+
+function normalizeCanvasLanguage(language: string, code: string) {
+  const normalized = language.trim().toLowerCase()
+  if (normalized) {
+    return normalized
+  }
+
+  if (/<!doctype html>|<html[\s>]|<body[\s>]|<head[\s>]/i.test(code)) {
+    return 'html'
+  }
+
+  if (/^[\s\S]*\{[\s\S]*\}[\s\S]*$/.test(code) && /[.#@a-zA-Z][^{]+\{/.test(code)) {
+    return 'css'
+  }
+
+  return ''
+}
+
+function extractStyleTagContent(source: string) {
+  const match = source.match(/<style\b[^>]*>([\s\S]*?)<\/style>/i)
+  return match?.[1] ?? null
+}
+
+function getLatestUserPrompt(messages: Array<z.infer<typeof chatMessageSchema>>) {
+  return [...messages]
+    .reverse()
+    .find((message) => message.role === 'user')
+    ?.content
+    .trim() ?? ''
+}
+
+function userRequestedFullCanvasRewrite(prompt: string) {
+  return /\b(rewrite|redesign|regenerate|overhaul|start over|from scratch|replace (?:the )?(?:whole|entire)|entirely new|completely new|different layout|new version)\b/i.test(prompt)
+}
+
+function extractPromptCssSelectors(prompt: string) {
+  const explicitSelectors = prompt.match(/[.#][A-Za-z_][\w-]*/g) ?? []
+  const backtickedIdentifiers = [...prompt.matchAll(/`([A-Za-z_][\w-]*)`/g)].map((match) => match[1])
+  const hyphenatedIdentifiers = prompt.match(/\b[A-Za-z_][\w-]*-[A-Za-z_][\w-]*\b/g) ?? []
+
+  const selectors = new Set<string>()
+  for (const selector of explicitSelectors) {
+    selectors.add(selector)
+  }
+  for (const identifier of [...backtickedIdentifiers, ...hyphenatedIdentifiers]) {
+    selectors.add(identifier)
+    selectors.add(`.${identifier}`)
+    selectors.add(`#${identifier}`)
+  }
+
+  return [...selectors]
+}
+
+function isFullCanvasDocument(code: string, language: string) {
+  const normalizedLanguage = normalizeCanvasLanguage(language, code)
+  if (normalizedLanguage === 'html') {
+    return /<!doctype html>|<html[\s>]|<body[\s>]|<head[\s>]/i.test(code)
+  }
+
+  return false
+}
+
+function mergeChangedCssBlocksFromFullCanvas(
+  previousCanvas: { code: string; language: string },
+  nextCanvas: ExtractedCodeFence,
+  latestUserPrompt: string,
+) {
+  const previousLanguage = normalizeCanvasLanguage(previousCanvas.language, previousCanvas.code)
+  const nextLanguage = normalizeCanvasLanguage(nextCanvas.language, nextCanvas.code)
+
+  let previousCss: string | null = null
+  let nextCss: string | null = null
+
+  if (previousLanguage === 'html' && nextLanguage === 'html') {
+    previousCss = extractStyleTagContent(previousCanvas.code)
+    nextCss = extractStyleTagContent(nextCanvas.code)
+  } else if (previousLanguage === 'css' && nextLanguage === 'css') {
+    previousCss = previousCanvas.code
+    nextCss = nextCanvas.code
+  } else {
+    return null
+  }
+
+  if (!previousCss || !nextCss) {
+    return null
+  }
+
+  const previousBlocks = extractCssSnippetBlocks(previousCss)
+  const nextBlocks = extractCssSnippetBlocks(nextCss)
+  if (previousBlocks.length === 0 || nextBlocks.length === 0) {
+    return null
+  }
+
+  const previousBlockMap = new Map(previousBlocks.map((block) => [block.header, block.text]))
+  let changedBlocks = nextBlocks.filter((block) => previousBlockMap.get(block.header) !== block.text)
+  if (changedBlocks.length === 0) {
+    return previousCanvas.code
+  }
+
+  const promptSelectors = extractPromptCssSelectors(latestUserPrompt)
+  if (promptSelectors.length > 0) {
+    const promptMatchedBlocks = changedBlocks.filter((block) =>
+      promptSelectors.some((selector) => block.header.includes(selector)),
+    )
+
+    if (promptMatchedBlocks.length > 0) {
+      changedBlocks = promptMatchedBlocks
+    }
+  }
+
+  const localizedEditThreshold = Math.max(2, Math.ceil(nextBlocks.length * 0.25))
+  if (!userRequestedFullCanvasRewrite(latestUserPrompt) && changedBlocks.length > localizedEditThreshold) {
+    return null
+  }
+
+  const mergedSnippet = changedBlocks.map((block) => block.text).join('\n\n')
+  if (!mergedSnippet) {
+    return previousCanvas.code
+  }
+
+  if (previousLanguage === 'html') {
+    return mergeCssSnippetIntoHtml(previousCanvas.code, mergedSnippet)
+  }
+
+  return mergeCssSnippetIntoCss(previousCanvas.code, mergedSnippet)
+}
+
+function mergeCanvasFragment(
+  previousCanvas: { code: string; language: string },
+  nextCanvas: ExtractedCodeFence,
+) {
+  const previousLanguage = normalizeCanvasLanguage(previousCanvas.language, previousCanvas.code)
+  const nextLanguage = normalizeCanvasLanguage(nextCanvas.language, nextCanvas.code)
+
+  const cssLikeFragment =
+    nextLanguage === 'css' ||
+    (!nextLanguage && !isFullCanvasDocument(nextCanvas.code, nextCanvas.language) && /[.#@a-zA-Z][^{]+\{/.test(nextCanvas.code))
+
+  if (cssLikeFragment) {
+    if (previousLanguage === 'css') {
+      return mergeCssSnippetIntoCss(previousCanvas.code, nextCanvas.code)
+    }
+
+    if (previousLanguage === 'html') {
+      return mergeCssSnippetIntoHtml(previousCanvas.code, nextCanvas.code)
+    }
+  }
+
+  return null
+}
+
+function isLikelyCanvasFragment(
+  previousCanvas: { code: string; language: string },
+  nextCanvas: ExtractedCodeFence,
+) {
+  if (!nextCanvas.code.trim()) {
+    return false
+  }
+
+  if (isFullCanvasDocument(nextCanvas.code, nextCanvas.language)) {
+    return false
+  }
+
+  const previousLanguage = normalizeCanvasLanguage(previousCanvas.language, previousCanvas.code)
+  const nextLanguage = normalizeCanvasLanguage(nextCanvas.language, nextCanvas.code)
+
+  if (nextLanguage === 'css' || nextLanguage === 'js' || nextLanguage === 'ts' || nextLanguage === 'tsx') {
+    return true
+  }
+
+  if (previousLanguage === 'html' && nextCanvas.code.trim().length < previousCanvas.code.trim().length) {
+    return true
+  }
+
+  return false
+}
+
+function resolveCanvasCodeForFollowUp(
+  messages: Array<z.infer<typeof chatMessageSchema>>,
+  assistantText: string,
+  canvasQuestion?: string,
+) {
+  if (!canvasQuestion) {
+    return assistantText
+  }
+
+  const previousCanvasMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === 'assistant' && message.canvasContext?.question)
+
+  if (!previousCanvasMessage) {
+    return assistantText
+  }
+
+  const previousCanvas = extractFirstCodeFence(previousCanvasMessage.content)
+  if (!previousCanvas.code) {
+    return assistantText
+  }
+  const latestUserPrompt = getLatestUserPrompt(messages)
+  const userRequestedRewrite = userRequestedFullCanvasRewrite(latestUserPrompt)
+
+  const nextCanvas = extractFirstCodeFence(assistantText)
+  if (nextCanvas.code) {
+    const mergedCanvas = mergeCanvasFragment(previousCanvas, nextCanvas)
+    if (mergedCanvas) {
+      return nextCanvas.markdownWithoutCode
+        ? `${nextCanvas.markdownWithoutCode}\n\n${formatCodeFence(mergedCanvas, previousCanvas.language)}`
+        : formatCodeFence(mergedCanvas, previousCanvas.language)
+    }
+
+    if (!userRequestedRewrite && isFullCanvasDocument(nextCanvas.code, nextCanvas.language)) {
+      const selectivelyMergedCanvas = mergeChangedCssBlocksFromFullCanvas(
+        previousCanvas,
+        nextCanvas,
+        latestUserPrompt,
+      )
+      if (selectivelyMergedCanvas) {
+        return nextCanvas.markdownWithoutCode
+          ? `${nextCanvas.markdownWithoutCode}\n\n${formatCodeFence(selectivelyMergedCanvas, previousCanvas.language)}`
+          : formatCodeFence(selectivelyMergedCanvas, previousCanvas.language)
+      }
+    }
+
+    if (isLikelyCanvasFragment(previousCanvas, nextCanvas)) {
+      const preservedCanvas = formatCodeFence(previousCanvas.code, previousCanvas.language)
+      return nextCanvas.markdownWithoutCode
+        ? `${nextCanvas.markdownWithoutCode}\n\n${preservedCanvas}`
+        : preservedCanvas
+    }
+
+    return assistantText
+  }
+
+  const canvasPatch = extractCanvasPatch(assistantText)
+  if (canvasPatch) {
+    const patchedCanvas = applyCanvasPatch(previousCanvas.code, canvasPatch.operations)
+    if (patchedCanvas !== null) {
+      return canvasPatch.markdownWithoutPatch
+        ? `${canvasPatch.markdownWithoutPatch}\n\n${formatCodeFence(patchedCanvas, previousCanvas.language)}`
+        : formatCodeFence(patchedCanvas, previousCanvas.language)
+    }
+  }
+
+  const preservedCanvas = formatCodeFence(previousCanvas.code, previousCanvas.language)
+  return nextCanvas.markdownWithoutCode
+    ? `${nextCanvas.markdownWithoutCode}\n\n${preservedCanvas}`
+    : preservedCanvas
+}
+
 type SerializableCitation = {
   id: string
   href: string
@@ -2323,6 +2878,7 @@ function buildCompletionInput(
   activateLearningMode: boolean,
   personalizedSystemPrompt: string,
   memoryPrompt: string,
+  canvasQuestion?: string,
 ) {
   return [
     {
@@ -2341,6 +2897,14 @@ function buildCompletionInput(
       role: 'system' as const,
       content: visualizationSystemPrompt,
     },
+    ...(canvasQuestion
+      ? [
+          {
+            role: 'system' as const,
+            content: canvasSystemPrompt,
+          },
+        ]
+      : []),
     ...(activateLearningMode
       ? [
           {
@@ -2369,6 +2933,7 @@ type GenerationTaskPayload = {
   activateWebSearch: boolean
   activateLearningMode: boolean
   persistChatHistory: boolean
+  canvasQuestion?: string
   messages: Array<z.infer<typeof chatMessageSchema>>
 }
 
@@ -2567,6 +3132,7 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
       payload.activateLearningMode,
       personalizedSystemPrompt,
       memoryPrompt,
+      payload.canvasQuestion,
     ),
   }
 
@@ -2689,7 +3255,11 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
     modelThinking = extractModelThinking(responseRecord.output)
     const fallbackText = typeof responseRecord.output_text === 'string' ? responseRecord.output_text.trim() : ''
     const rawText = extracted.text || fallbackText || streamedText
-    text = sanitizeAssistantText(rawText)
+    text = resolveCanvasCodeForFollowUp(
+      payload.messages,
+      sanitizeAssistantText(rawText),
+      payload.canvasQuestion,
+    )
     assistantSearchedWeb = extracted.searchedWeb || extracted.citations.length > 0
     citations = extracted.citations
   }
@@ -2743,6 +3313,7 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
               message.role === 'user'
                 ? sanitizeAttachmentsForStorage(message.attachments ?? [])
                 : [],
+            canvasContext: sanitizeCanvasContextForStorage(message.canvasContext),
             citations: Array.isArray(message.citations) ? message.citations : [],
             memoryContext: [] as UsedMemoryContext[],
             searchedWeb: Boolean(message.searchedWeb),
@@ -2753,6 +3324,9 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
           role: 'assistant' as const,
           content: text,
           attachments: [],
+          canvasContext: sanitizeCanvasContextForStorage(
+            payload.canvasQuestion ? { question: payload.canvasQuestion } : null,
+          ),
           citations,
           memoryContext: usedMemoryContext,
           searchedWeb: assistantSearchedWeb,
@@ -2771,12 +3345,13 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
             content,
             model,
             attachments_json,
+            canvas_context_json,
             citations_json,
             memory_context_json,
             searched_web,
             thinking_text
           )
-          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10)
+          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11)
           `,
           [
             payload.chatSessionId,
@@ -2785,6 +3360,7 @@ async function runGenerationTask(payload: GenerationTaskPayload) {
             message.content,
             message.model,
             JSON.stringify(message.attachments),
+            JSON.stringify(message.canvasContext),
             JSON.stringify(message.citations),
             JSON.stringify(message.memoryContext),
             message.searchedWeb,
@@ -3424,6 +4000,7 @@ app.get('/account/export', async (request, reply) => {
       content: string
       model: string | null
       attachments_json: unknown
+      canvas_context_json: unknown
       citations_json: unknown
       memory_context_json: unknown
       searched_web: boolean
@@ -3437,6 +4014,7 @@ app.get('/account/export', async (request, reply) => {
         content,
         model,
         attachments_json,
+        canvas_context_json,
         citations_json,
         memory_context_json,
         searched_web,
@@ -3512,6 +4090,9 @@ app.get('/account/export', async (request, reply) => {
         content: message.content,
         model: message.model,
         attachments: Array.isArray(message.attachments_json) ? message.attachments_json : [],
+        ...(message.canvas_context_json && typeof message.canvas_context_json === 'object'
+          ? { canvasContext: message.canvas_context_json }
+          : {}),
         citations: Array.isArray(message.citations_json) ? message.citations_json : [],
         memoryContext: Array.isArray(message.memory_context_json) ? message.memory_context_json : [],
         searchedWeb: message.searched_web,
@@ -4137,13 +4718,14 @@ app.post('/chat/sessions/:sessionId/fork', async (request, reply) => {
       content: string
       model: string | null
       attachments_json: unknown
+      canvas_context_json: unknown
       citations_json: unknown
       memory_context_json: unknown
       searched_web: boolean
       thinking_text: string | null
     }>(
       `
-      SELECT id, role, content, model, attachments_json, citations_json, memory_context_json, searched_web, thinking_text
+      SELECT id, role, content, model, attachments_json, canvas_context_json, citations_json, memory_context_json, searched_web, thinking_text
       FROM chat_messages
       WHERE conversation_id = $1
       ORDER BY created_at ASC, id ASC
@@ -4204,12 +4786,13 @@ app.post('/chat/sessions/:sessionId/fork', async (request, reply) => {
             content,
             model,
             attachments_json,
+            canvas_context_json,
             citations_json,
             memory_context_json,
             searched_web,
             thinking_text
           )
-          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10)
+          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11)
           `,
           [
             forkedSessionId,
@@ -4218,6 +4801,11 @@ app.post('/chat/sessions/:sessionId/fork', async (request, reply) => {
             message.content,
             message.model,
             JSON.stringify(Array.isArray(message.attachments_json) ? message.attachments_json : []),
+            JSON.stringify(
+              message.canvas_context_json && typeof message.canvas_context_json === 'object'
+                ? message.canvas_context_json
+                : null,
+            ),
             JSON.stringify(Array.isArray(message.citations_json) ? message.citations_json : []),
             JSON.stringify(Array.isArray(message.memory_context_json) ? message.memory_context_json : []),
             Boolean(message.searched_web),
@@ -4329,13 +4917,14 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
       role: 'user' | 'assistant'
       content: string
       attachments_json: unknown
+      canvas_context_json: unknown
       citations_json: unknown
       memory_context_json: unknown
       searched_web: boolean
       thinking_text: string | null
     }>(
       `
-      SELECT id, role, content, attachments_json, citations_json, memory_context_json, searched_web, thinking_text
+      SELECT id, role, content, attachments_json, canvas_context_json, citations_json, memory_context_json, searched_web, thinking_text
       FROM chat_messages
       WHERE conversation_id = $1
       ORDER BY created_at ASC, id ASC
@@ -4384,6 +4973,9 @@ app.get('/chat/sessions/:sessionId', async (request, reply) => {
         content: message.content,
         ...(Array.isArray(message.attachments_json) && message.attachments_json.length > 0
           ? { attachments: message.attachments_json }
+          : {}),
+        ...(message.canvas_context_json && typeof message.canvas_context_json === 'object'
+          ? { canvasContext: message.canvas_context_json }
           : {}),
         ...(Array.isArray(message.citations_json) && message.citations_json.length > 0
           ? { citations: message.citations_json }
@@ -4685,6 +5277,7 @@ app.post('/chat/completions', async (request, reply) => {
           activateWebSearch,
           activateLearningMode,
           persistChatHistory,
+          canvasQuestion: body.canvasQuestion,
           messages: body.messages,
         }).catch(async (generationError) => {
           const fallbackMessage =

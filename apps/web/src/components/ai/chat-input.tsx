@@ -31,12 +31,15 @@ type ChatInputProps = {
   onWebSearchChange: (active: boolean) => void
   learningModeActive: boolean
   onLearningModeChange: (active: boolean) => void
+  isCanvasMode?: boolean
+  onCanvasModeChange?: (active: boolean) => void
   showQuickTemplates?: boolean
   templateSeedText?: string
   isCodeContext?: boolean
   aiFollowUps?: Array<{ id: string; label: string; prompt: string }>
   quickTemplateMode?: 'starter' | 'follow-up'
   autoSendQuickTemplates?: boolean
+  isBottomDocked?: boolean
 }
 
 type UploadedFile = {
@@ -56,6 +59,7 @@ type SlashCommand = {
 
 type QuickTemplate = {
   id: 'summarize' | 'rewrite' | 'fix-code' | 'next-steps'
+  renderKey?: string
   label: string
   prompt: string
   Icon: React.ComponentType<{ className?: string }>
@@ -263,12 +267,15 @@ function ChatInput({
   onWebSearchChange,
   learningModeActive,
   onLearningModeChange,
+  isCanvasMode = false,
+  onCanvasModeChange,
   showQuickTemplates = true,
   templateSeedText = '',
   isCodeContext = false,
   aiFollowUps = [],
   quickTemplateMode = 'follow-up',
   autoSendQuickTemplates = true,
+  isBottomDocked = false,
 }: ChatInputProps) {
   const inputRef = useRef<HTMLInputElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -322,6 +329,7 @@ function ChatInput({
 
         return {
           id,
+          renderKey: `${normalizedId || `follow-up-${index + 1}`}::${item.label.trim()}::${index}`,
           label: item.label.trim(),
           prompt: item.prompt.trim(),
           ...quickTemplateVisuals[id],
@@ -381,6 +389,7 @@ function ChatInput({
     if (hasLongContext) {
       templates.push({
         id: 'summarize',
+        renderKey: 'starter-summarize',
         label: templateLabels.summarize,
         prompt: contextualTemplatePrompt.summarize,
         ...quickTemplateVisuals.summarize,
@@ -390,6 +399,7 @@ function ChatInput({
     if (normalizedTemplateSeed.length >= 30 || templateWordCount >= 5) {
       templates.push({
         id: 'rewrite',
+        renderKey: 'starter-rewrite',
         label: templateLabels.rewrite,
         prompt: contextualTemplatePrompt.rewrite,
         ...quickTemplateVisuals.rewrite,
@@ -399,6 +409,7 @@ function ChatInput({
     if (isCodeContext) {
       templates.push({
         id: 'fix-code',
+        renderKey: 'starter-fix-code',
         label: templateLabels.fixCode,
         prompt: contextualTemplatePrompt.fixCode,
         ...quickTemplateVisuals['fix-code'],
@@ -407,6 +418,7 @@ function ChatInput({
 
     templates.push({
       id: 'next-steps',
+      renderKey: 'starter-next-steps',
       label: templateLabels.nextSteps,
       prompt: contextualTemplatePrompt.brainstorm,
       ...quickTemplateVisuals['next-steps'],
@@ -793,7 +805,7 @@ function ChatInput({
       >
         {quickTemplates.map((template) => (
           <button
-            key={template.id}
+            key={template.renderKey ?? template.id}
             type="button"
             onClick={() => handleQuickTemplate(template)}
             className="flex shrink-0 items-center gap-1.5 rounded-full border border-[#E5E5E5] bg-white px-3.5 py-1.5 text-[13px] font-medium text-gray-600 shadow-sm transition-colors hover:bg-gray-50 dark:border-white/10 dark:bg-[#2f2f2f] dark:text-gray-300 dark:hover:bg-[#3a3a3a]"
@@ -804,7 +816,9 @@ function ChatInput({
         ))}
       </div>
 
-      <div className="relative z-20 w-full max-w-3xl rounded-[32px] border border-[#E5E5E5] bg-white p-3 shadow-[0_2px_12px_rgba(0,0,0,0.03)] dark:border-white/10 dark:bg-[#2f2f2f] dark:shadow-[0_2px_24px_rgba(0,0,0,0.35)]">
+      <div
+        className={`relative z-20 w-full max-w-3xl border border-[#E5E5E5] bg-white p-3 shadow-[0_2px_12px_rgba(0,0,0,0.03)] dark:border-white/10 dark:bg-[#2f2f2f] dark:shadow-[0_2px_24px_rgba(0,0,0,0.35)] ${isBottomDocked ? 'rounded-t-[32px] rounded-b-none border-b-0 shadow-none' : 'rounded-[32px]'}`}
+      >
         <div className="flex flex-col gap-3 px-3 pt-2 pb-8">
           <div
             className={`w-full gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${uploadedFiles.length === 0 ? 'hidden' : 'flex'}`}
@@ -1006,6 +1020,24 @@ function ChatInput({
                   <span className="flex-1 text-left font-medium">Learning Mode</span>
                   <Check className={`size-4 text-purple-500 ${learningModeActive ? '' : 'hidden'}`} />
                 </button>
+
+                {onCanvasModeChange ? (
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onCanvasModeChange(!isCanvasMode)
+                      setIsToolsMenuOpen(false)
+                    }}
+                    className="mt-0.5 flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-[14px] text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-white/10"
+                  >
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gray-100 dark:bg-white/10">
+                      <Code2 className="size-3.5 text-gray-700 dark:text-gray-200" />
+                    </div>
+                    <span className="flex-1 text-left font-medium">Canvas</span>
+                    <Check className={`size-4 text-gray-700 dark:text-gray-200 ${isCanvasMode ? '' : 'hidden'}`} />
+                  </button>
+                ) : null}
               </div>
             </div>
 
@@ -1048,6 +1080,21 @@ function ChatInput({
                   onClick={() => onLearningModeChange(false)}
                   className="ml-0.5 flex shrink-0 items-center justify-center text-[#C084FC] transition-colors hover:text-[#9333EA] dark:text-purple-500 dark:hover:text-purple-300"
                   aria-label="Disable learning mode"
+                >
+                  <X className="size-3.5" />
+                </button>
+              </div>
+            ) : null}
+
+            {isCanvasMode && onCanvasModeChange ? (
+              <div className="flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] border border-gray-200 bg-gray-50 px-2.5 text-[13px] text-gray-700 dark:border-white/15 dark:bg-white/5 dark:text-gray-200">
+                <Code2 className="size-3.5 shrink-0" />
+                <span className="font-medium whitespace-nowrap">Canvas</span>
+                <button
+                  type="button"
+                  onClick={() => onCanvasModeChange(false)}
+                  className="ml-0.5 flex shrink-0 items-center justify-center text-gray-400 transition-colors hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-200"
+                  aria-label="Disable canvas mode"
                 >
                   <X className="size-3.5" />
                 </button>

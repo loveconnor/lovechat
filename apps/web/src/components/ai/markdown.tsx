@@ -5,6 +5,7 @@ import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
+import { LayoutTemplate } from "lucide-react";
 import {
   CodeBlock,
   CodeBlockHeader,
@@ -21,6 +22,7 @@ export type MarkdownProps = {
   children: string;
   className?: string;
   components?: Partial<Components>;
+  onConvertToCanvas?: (payload: { code: string; language: string }) => void;
 };
 
 type CodeLanguage =
@@ -288,6 +290,125 @@ function extractOptionalFilename({
 }
 
 const MarkdownRenderContext = React.createContext<{ inTableCell: boolean }>({ inTableCell: false });
+const MarkdownCanvasActionContext = React.createContext<MarkdownProps["onConvertToCanvas"] | undefined>(undefined);
+
+type MarkdownCodeRendererProps = {
+  className?: string;
+  children?: React.ReactNode;
+  node?: unknown;
+  inTableCell: boolean;
+  onConvertToCanvas?: MarkdownProps["onConvertToCanvas"];
+};
+
+function renderMarkdownCode({
+  className,
+  children,
+  node,
+  inTableCell,
+  onConvertToCanvas,
+}: MarkdownCodeRendererProps) {
+  const match = /language-([A-Za-z0-9_+-]+)/.exec(className || '');
+  const isInline = !match && !String(children).includes('\n');
+
+  if (isInline) {
+    const content = String(children);
+    const isMath = content.startsWith('$') && content.endsWith('$') && content.length > 2;
+
+    if (isMath) {
+      const mathContent = content.slice(1, -1);
+      return (
+        <code
+          className={cn(MARKDOWN_INLINE_CODE_CLASSNAME, className)}
+        >
+          {mathContent}
+        </code>
+      );
+    }
+
+    if (shouldPromoteInlineCodeToBlock(content, inTableCell)) {
+      const inlineCode = content.trim();
+      const language = inferCodeLanguage(null, inlineCode);
+      const shikiLanguage = toShikiLanguage(language);
+      return (
+        <CodeBlock className="border-border/70 my-1 shadow-none dark:border-white/15">
+          <CodeBlockHeader className="border-b border-border/60 dark:border-white/10">
+            <CodeBlockGroup>
+              <CodeBlockIcon language={language} className="size-5" />
+            </CodeBlockGroup>
+            <div className="flex items-center gap-2">
+              {onConvertToCanvas ? (
+                <button
+                  type="button"
+                  onClick={() => onConvertToCanvas({ code: inlineCode, language })}
+                  className="inline-flex items-center gap-1 text-neutral-600 transition-colors duration-200 ease-in-out hover:text-neutral-950 dark:text-neutral-400 hover:dark:text-neutral-50"
+                  aria-label="Convert code to canvas"
+                  title="Convert to canvas"
+                >
+                  <LayoutTemplate size={14} />
+                  <span className="text-xs font-medium">Canvas</span>
+                </button>
+              ) : null}
+              <CopyButton content={inlineCode} />
+            </div>
+          </CodeBlockHeader>
+          <CodeBlockContent className="whitespace-normal rounded-none rounded-b-lg bg-muted/50 dark:bg-black/25">
+            <CodeblockShiki code={inlineCode} language={shikiLanguage} className="[&>pre]:m-0" />
+          </CodeBlockContent>
+        </CodeBlock>
+      );
+    }
+
+    return (
+      <code
+        className={cn(MARKDOWN_INLINE_CODE_CLASSNAME, className)}
+      >
+        {children}
+      </code>
+    );
+  }
+
+  const rawLanguage = match ? match[1] : null;
+  let code = String(children ?? "").replace(/^\n+/, "").replace(/\n$/, "");
+  let language = inferCodeLanguage(rawLanguage, code);
+  if (!rawLanguage) {
+    const extracted = extractLeadingLanguageLine(code);
+    if (extracted) {
+      code = extracted.code;
+      language = extracted.language;
+    }
+  }
+  const shikiLanguage = toShikiLanguage(language);
+  const optionalFilename = extractOptionalFilename({ className, node });
+
+  return (
+    <CodeBlock className="border-border/70 shadow-none dark:border-white/15">
+      <CodeBlockHeader className="border-b border-border/60 dark:border-white/10">
+        <CodeBlockGroup>
+          <CodeBlockIcon language={language} className="size-5" />
+          {optionalFilename ? <span>{optionalFilename}</span> : null}
+        </CodeBlockGroup>
+        <div className="flex items-center gap-2">
+          {onConvertToCanvas ? (
+            <button
+              type="button"
+              onClick={() => onConvertToCanvas({ code, language })}
+              className="inline-flex items-center gap-1 text-neutral-600 transition-colors duration-200 ease-in-out hover:text-neutral-950 dark:text-neutral-400 hover:dark:text-neutral-50"
+              aria-label="Convert code to canvas"
+              title="Convert to canvas"
+            >
+              <LayoutTemplate size={14} />
+              <span className="text-xs font-medium">Canvas</span>
+            </button>
+          ) : null}
+          <CopyButton content={code} />
+        </div>
+      </CodeBlockHeader>
+      <CodeBlockContent className="whitespace-normal rounded-none rounded-b-lg bg-muted/50 dark:bg-black/25">
+        <CodeblockShiki code={code} language={shikiLanguage} className="[&>pre]:m-0" />
+      </CodeBlockContent>
+    </CodeBlock>
+  );
+}
 
 function inferImageExtensionFromUrl(url: string): string {
   if (url.startsWith("data:image/")) {
@@ -481,95 +602,17 @@ const DEFAULT_COMPONENTS: Partial<Components> = {
   ),
   code: ({ className, children, node }) => (
     <MarkdownRenderContext.Consumer>
-      {({ inTableCell }) => {
-        // In react-markdown v9+, the 'inline' prop is removed.
-        // We use heuristics to determine if it should be rendered inline or as a block.
-        const match = /language-([A-Za-z0-9_+-]+)/.exec(className || '');
-        const isInline = !match && !String(children).includes('\n');
-
-        if (isInline) {
-          const content = String(children);
-          // Check if this is actually a math expression (wrapped in $ signs)
-          // These should be rendered as code but without the $ delimiters
-          const isMath = content.startsWith('$') && content.endsWith('$') && content.length > 2;
-          
-          if (isMath) {
-            // Strip the $ signs and render as code
-            const mathContent = content.slice(1, -1);
-            return (
-              <code
-                className={cn(MARKDOWN_INLINE_CODE_CLASSNAME, className)}
-              >
-                {mathContent}
-              </code>
-            );
-          }
-
-          if (shouldPromoteInlineCodeToBlock(content, inTableCell)) {
-            const inlineCode = content.trim();
-            const language = inferCodeLanguage(null, inlineCode);
-            const shikiLanguage = toShikiLanguage(language);
-            return (
-              <CodeBlock className="border-border/70 my-1 shadow-none dark:border-white/15">
-                <CodeBlockHeader className="border-b border-border/60 dark:border-white/10">
-                  <CodeBlockGroup>
-                    <CodeBlockIcon language={language} className="size-5" />
-                  </CodeBlockGroup>
-                  <CopyButton content={inlineCode} />
-                </CodeBlockHeader>
-                <CodeBlockContent className="whitespace-normal rounded-none rounded-b-lg bg-muted/50 dark:bg-black/25">
-                  <CodeblockShiki code={inlineCode} language={shikiLanguage} className="[&>pre]:m-0" />
-                </CodeBlockContent>
-              </CodeBlock>
-            );
-          }
-          
-          return (
-            <code
-              className={cn(MARKDOWN_INLINE_CODE_CLASSNAME, className)}
-            >
-              {children}
-            </code>
-          );
-        }
-
-        // Detect language if not specified
-        const rawLanguage = match ? match[1] : null;
-        let code = String(children ?? "").replace(/^\n+/, "").replace(/\n$/, "");
-        let language = inferCodeLanguage(rawLanguage, code);
-        if (!rawLanguage) {
-          const extracted = extractLeadingLanguageLine(code);
-          if (extracted) {
-            code = extracted.code;
-            language = extracted.language;
-          }
-        }
-        const shikiLanguage = toShikiLanguage(language);
-
-        // Return the CodeBlock directly without wrapper to avoid nesting issues
-        const optionalFilename = extractOptionalFilename({ className, node });
-
-        return (
-          <CodeBlock className="border-border/70 shadow-none dark:border-white/15">
-            <CodeBlockHeader className="border-b border-border/60 dark:border-white/10">
-              <CodeBlockGroup>
-                <CodeBlockIcon language={language} className="size-5" />
-                {optionalFilename ? <span>{optionalFilename}</span> : null}
-              </CodeBlockGroup>
-              <CopyButton content={code} />
-            </CodeBlockHeader>
-            <CodeBlockContent className="whitespace-normal rounded-none rounded-b-lg bg-muted/50 dark:bg-black/25">
-              <CodeblockShiki code={code} language={shikiLanguage} className="[&>pre]:m-0" />
-            </CodeBlockContent>
-          </CodeBlock>
-        );
-      }}
+      {({ inTableCell }) => (
+        <MarkdownCanvasActionContext.Consumer>
+          {(onConvertToCanvas) => renderMarkdownCode({ className, children, node, inTableCell, onConvertToCanvas })}
+        </MarkdownCanvasActionContext.Consumer>
+      )}
     </MarkdownRenderContext.Consumer>
   ),
   pre: ({ children }) => <>{children}</>
 };
 
-function MarkdownComponent({ children, className, components = DEFAULT_COMPONENTS }: MarkdownProps) {
+function MarkdownComponent({ children, className, components, onConvertToCanvas }: MarkdownProps) {
   const mergedComponents = useMemo(
     () => ({
       ...DEFAULT_COMPONENTS,
@@ -680,15 +723,17 @@ function MarkdownComponent({ children, className, components = DEFAULT_COMPONENT
 
   return (
     <div className={cn("prose prose-neutral dark:prose-invert max-w-none break-words prose-p:leading-relaxed prose-pre:bg-muted prose-pre:border prose-pre:overflow-x-auto prose-code:before:content-none prose-code:after:content-none prose-headings:text-foreground prose-strong:text-foreground", className)}>
-      <ReactMarkdown
-        remarkPlugins={[
-          remarkGfm, 
-          [remarkMath, { singleDollarTextMath: true }]
-        ]}
-        rehypePlugins={[rehypeKatex]}
-        components={mergedComponents}>
-        {finalProcessedContent}
-      </ReactMarkdown>
+      <MarkdownCanvasActionContext.Provider value={onConvertToCanvas}>
+        <ReactMarkdown
+          remarkPlugins={[
+            remarkGfm, 
+            [remarkMath, { singleDollarTextMath: true }]
+          ]}
+          rehypePlugins={[rehypeKatex]}
+          components={mergedComponents}>
+          {finalProcessedContent}
+        </ReactMarkdown>
+      </MarkdownCanvasActionContext.Provider>
     </div>
   );
 }

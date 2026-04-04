@@ -4,6 +4,7 @@ import ThemeToggle from '#/components/ThemeToggle'
 
 type ChatHeaderProps = {
   chatTitle?: string
+  hideChatTitle?: boolean
   showSidebarToggle?: boolean
   onToggleSidebar?: () => void
   onCopyLink: () => void | Promise<void>
@@ -17,6 +18,7 @@ type ChatHeaderProps = {
 
 function ChatHeader({
   chatTitle,
+  hideChatTitle = false,
   showSidebarToggle = false,
   onToggleSidebar,
   onCopyLink,
@@ -54,7 +56,10 @@ function ChatHeader({
   const isShareOpen = openDropdown === 'share'
   const isMoreOpen = openDropdown === 'more'
   const normalizedChatTitle = chatTitle?.trim() ?? ''
-  const shouldShowChatTitle = normalizedChatTitle.length > 0 && normalizedChatTitle.toLowerCase() !== 'new chat'
+  const shouldShowChatTitle =
+    !hideChatTitle &&
+    normalizedChatTitle.length > 0 &&
+    normalizedChatTitle.toLowerCase() !== 'new chat'
 
   return (
     <header
@@ -92,7 +97,7 @@ function ChatHeader({
       </div>
 
       {shouldShowChatTitle ? (
-        <div className="pointer-events-none absolute left-1/2 max-w-[min(52vw,36rem)] -translate-x-1/2 px-3 text-center">
+        <div className="pointer-events-none absolute left-1/2 hidden w-full max-w-[calc(100%-18rem)] -translate-x-1/2 px-3 text-center sm:block">
           <p className="truncate text-[15px] font-semibold tracking-tight text-gray-800 dark:text-gray-100">{normalizedChatTitle}</p>
         </div>
       ) : null}

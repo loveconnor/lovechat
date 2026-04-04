@@ -15,8 +15,9 @@ import {
   Pencil,
   RotateCcw,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CitationList } from '#/components/ai/citation'
+import { CanvasCodeBlock, CanvasPreviewPanel, defaultCanvasCode } from '#/components/ai/chat-canvas'
 import { ChatHeader } from '#/components/ai/chat-header'
 import { ChatInput } from '#/components/ai/chat-input'
 import { ChatSidebar } from '#/components/ai/chat-sidebar'
@@ -59,12 +60,17 @@ type FollowUpSuggestion = {
   prompt: string
 }
 
+type CanvasContext = {
+  question: string
+}
+
 type ChatMessage = {
   id: string
   messageId?: number
   role: ChatRole
   content: string
   attachments?: ChatAttachment[]
+  canvasContext?: CanvasContext
   citations?: SerializableCitation[]
   memoryContext?: UsedMemoryContext[]
   searchedWeb?: boolean
@@ -153,6 +159,7 @@ type ChatSessionResponse = {
     role: ChatRole
     content: string
     attachments?: unknown
+    canvasContext?: unknown
     citations?: unknown
     memoryContext?: unknown
     searchedWeb?: boolean
@@ -178,6 +185,229 @@ type SubmitPromptOptions = {
   silent?: boolean
 }
 
+type RequestAssistantReplyOptions = {
+  canvasQuestion?: string
+  reuseAssistantMessageId?: string
+}
+
+type ExtractedCanvasStreamParts = {
+  code: string
+  language: string
+  markdownWithoutCode: string
+}
+
+type CanvasPreviewPayload = {
+  question: string
+  code: string
+}
+
+type CanvasVersionHistoryItem = CanvasPreviewPayload & {
+  id: string
+  label: string
+}
+
+type CanvasGenerationBaseline = CanvasPreviewPayload & {
+  language: string
+}
+
+function extractCanvasStreamParts(content: string): ExtractedCanvasStreamParts {
+  const openMatch = /```([^\r\n`]*)[\r\n]/.exec(content)
+  if (!openMatch || openMatch.index === undefined) {
+    return {
+      code: '',
+      language: '',
+      markdownWithoutCode: content,
+    }
+  }
+
+  const fenceStart = openMatch.index
+  const codeStart = fenceStart + openMatch[0].length
+  const closeIndex = content.indexOf('```', codeStart)
+  const language = openMatch[1]?.trim().toLowerCase() ?? ''
+
+  if (closeIndex === -1) {
+    return {
+      code: content.slice(codeStart).trim(),
+      language,
+      markdownWithoutCode: content.slice(0, fenceStart).trim(),
+    }
+  }
+
+  return {
+    code: content.slice(codeStart, closeIndex).trim(),
+    language,
+    markdownWithoutCode: `${content.slice(0, fenceStart)}${content.slice(closeIndex + 3)}`.trim(),
+  }
+}
+
+function buildCanvasResponseContent(markdown: string, code: string, language?: string) {
+  const normalizedMarkdown = markdown.trim()
+  const normalizedLanguage = language?.trim() || 'html'
+  const fencedCode = `\`\`\`${normalizedLanguage}\n${code}\n\`\`\``
+
+  return normalizedMarkdown ? `${normalizedMarkdown}\n\n${fencedCode}` : fencedCode
+}
+
+function preserveCanvasResponseContent(content: string, fallback?: CanvasGenerationBaseline | null) {
+  if (!fallback?.code) {
+    return content
+  }
+
+  const parsed = extractCanvasStreamParts(stripAssistantImageMarkdown(content))
+  if (parsed.code) {
+    return content
+  }
+
+  return buildCanvasResponseContent(parsed.markdownWithoutCode, fallback.code, fallback.language)
+}
+
+function getCanvasBaselineFromMessage(message: ChatMessage | null | undefined): CanvasGenerationBaseline | null {
+  if (!message || message.role !== 'assistant' || !message.canvasContext?.question) {
+    return null
+  }
+
+  const parsed = extractCanvasStreamParts(stripAssistantImageMarkdown(message.content))
+  if (!parsed.code) {
+    return null
+  }
+
+  return {
+    question: message.canvasContext.question,
+    code: parsed.code,
+    language: parsed.language || 'html',
+  }
+}
+
+function buildCanvasPreviewPayload(
+  content: string,
+  question: string,
+  fallback?: CanvasGenerationBaseline | null,
+): CanvasPreviewPayload {
+  const parsed = extractCanvasStreamParts(stripAssistantImageMarkdown(content))
+  if (parsed.code) {
+    return {
+      question,
+      code: parsed.code,
+    }
+  }
+
+  if (fallback?.code) {
+    return {
+      question,
+      code: fallback.code,
+    }
+  }
+
+  return {
+    question,
+    code: defaultCanvasCode,
+  }
+}
+
+function convertCodeBlockToCanvasCode(code: string, language: string) {
+  const normalizedLanguage = language.trim().toLowerCase()
+  const trimmedCode = code.trim()
+
+  if (!trimmedCode) {
+    return defaultCanvasCode
+  }
+
+  if (normalizedLanguage === 'html') {
+    return trimmedCode
+  }
+
+  if (normalizedLanguage === 'css') {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Canvas from CSS</title>
+  <style>
+${trimmedCode}
+  </style>
+</head>
+<body>
+  <main class="canvas-code-preview">
+    <h1>Canvas from CSS</h1>
+    <p>This code block only included styles, so this canvas preserves the CSS in a preview wrapper.</p>
+    <section class="card">Add matching HTML structure or keep iterating from here.</section>
+  </main>
+</body>
+</html>`
+  }
+
+  if (normalizedLanguage === 'js' || normalizedLanguage === 'ts' || normalizedLanguage === 'tsx') {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Canvas from ${normalizedLanguage.toUpperCase()}</title>
+  <style>
+    body { font-family: Inter, Arial, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; }
+    .canvas-shell { max-width: 960px; margin: 0 auto; padding: 48px 24px; }
+    .canvas-output { border: 1px solid #cbd5e1; border-radius: 16px; background: white; padding: 24px; min-height: 120px; }
+    pre { overflow: auto; border-radius: 12px; background: #0f172a; color: #e2e8f0; padding: 16px; }
+  </style>
+</head>
+<body>
+  <main class="canvas-shell">
+    <h1>Canvas from ${normalizedLanguage.toUpperCase()}</h1>
+    <div id="app" class="canvas-output"></div>
+    <h2>Source</h2>
+    <pre>${escapeHtml(trimmedCode)}</pre>
+  </main>
+  <script type="module">
+${trimmedCode}
+  </script>
+</body>
+</html>`
+  }
+
+  if (normalizedLanguage === 'json') {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Canvas from JSON</title>
+  <style>
+    body { font-family: Inter, Arial, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; }
+    main { max-width: 960px; margin: 0 auto; padding: 48px 24px; }
+    pre { overflow: auto; border-radius: 16px; background: #0f172a; color: #e2e8f0; padding: 20px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Canvas from JSON</h1>
+    <pre>${escapeHtml(trimmedCode)}</pre>
+  </main>
+</body>
+</html>`
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Canvas from ${normalizedLanguage || 'code'}</title>
+  <style>
+    body { font-family: Inter, Arial, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; }
+    main { max-width: 960px; margin: 0 auto; padding: 48px 24px; }
+    pre { overflow: auto; border-radius: 16px; background: #0f172a; color: #e2e8f0; padding: 20px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Canvas from ${normalizedLanguage || 'code'}</h1>
+    <pre>${escapeHtml(trimmedCode)}</pre>
+  </main>
+</body>
+</html>`
+}
+
 type LandingGreeting = {
   headerTemplate: string
   subtext: string
@@ -200,6 +430,11 @@ const attachmentImageDataUrlLimit = 6_000_000
 const attachmentPreviewDataUrlLimit = 8_000_000
 const selectedModelStorageKey = 'lovechat_selected_model_v1'
 const defaultSelectedModel = 'gpt-5'
+const previewPanelMinWidthPx = 360
+const chatPanelMinWidthPx = 320
+const quickTemplatesMinPaneWidthPx = 760
+const headerTitleMinPaneWidthPx = 840
+const headerTitleWithBranchMapMinPaneWidthPx = 940
 const greetingNameToken = '{name}'
 const forkIntentLabels: Record<ForkIntent, string> = {
   alternative: 'Alternative solution',
@@ -459,39 +694,6 @@ function normalizeFollowUps(input: unknown): FollowUpSuggestion[] {
     .slice(0, 4)
 }
 
-function memoryReasonLabel(reason: MemoryUsageReason) {
-  if (reason === 'style_preference') {
-    return 'Style preference'
-  }
-
-  if (reason === 'goal_alignment') {
-    return 'Goal alignment'
-  }
-
-  if (reason === 'constraint_guardrail') {
-    return 'Constraint guardrail'
-  }
-
-  return 'Identity'
-}
-
-function buildMemoryUsageIndicatorLabel(memories: UsedMemoryContext[]) {
-  const categories = new Set(memories.map((memory) => memory.category))
-  if (categories.has('preferences')) {
-    return 'Using your preferences'
-  }
-
-  if (categories.has('goals')) {
-    return 'Using your goals'
-  }
-
-  if (categories.has('constraints')) {
-    return 'Respecting your constraints'
-  }
-
-  return 'Using your memory context'
-}
-
 function normalizeAttachments(input: unknown): ChatAttachment[] {
   if (!Array.isArray(input)) {
     return []
@@ -545,6 +747,22 @@ function normalizeAttachments(input: unknown): ChatAttachment[] {
       }
     })
     .filter((attachment): attachment is ChatAttachment => attachment !== null)
+}
+
+function normalizeCanvasContext(input: unknown): CanvasContext | null {
+  if (!input || typeof input !== 'object') {
+    return null
+  }
+
+  const questionCandidate = (input as { question?: unknown }).question
+  const question = typeof questionCandidate === 'string' ? questionCandidate.trim() : ''
+  if (!question) {
+    return null
+  }
+
+  return {
+    question,
+  }
 }
 
 function formatFileSize(size: number) {
@@ -1033,6 +1251,7 @@ function createMessage(
   metadata?: {
     messageId?: number
     attachments?: ChatAttachment[]
+    canvasContext?: CanvasContext
     citations?: SerializableCitation[]
     memoryContext?: UsedMemoryContext[]
     searchedWeb?: boolean
@@ -1044,6 +1263,7 @@ function createMessage(
     role,
     content,
     ...(metadata?.attachments ? { attachments: metadata.attachments } : {}),
+    ...(metadata?.canvasContext ? { canvasContext: metadata.canvasContext } : {}),
     ...(metadata?.citations ? { citations: metadata.citations } : {}),
     ...(metadata?.memoryContext ? { memoryContext: metadata.memoryContext } : {}),
     ...(metadata?.searchedWeb !== undefined ? { searchedWeb: metadata.searchedWeb } : {}),
@@ -1143,15 +1363,9 @@ function loadSelectedModelPreference() {
 function ChatLanding() {
   const navigate = useNavigate()
   const apiBaseUrl = useMemo(() => import.meta.env.VITE_API_URL ?? 'http://localhost:4000', [])
-  const [selectedModel, setSelectedModel] = useState(loadSelectedModelPreference)
+  const [selectedModel, setSelectedModel] = useState(defaultSelectedModel)
   const [activeTopic, setActiveTopic] = useState<Topic | null>(null)
-  const [isMobileLayout, setIsMobileLayout] = useState(() => {
-    if (typeof window === 'undefined') {
-      return false
-    }
-
-    return window.matchMedia(mobileLayoutMediaQuery).matches
-  })
+  const [isMobileLayout, setIsMobileLayout] = useState(false)
   const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [fullName, setFullName] = useState('')
@@ -1177,6 +1391,15 @@ function ChatLanding() {
   const [aiFollowUps, setAiFollowUps] = useState<FollowUpSuggestion[]>([])
   const [webSearchActive, setWebSearchActive] = useState(false)
   const [learningModeActive, setLearningModeActive] = useState(false)
+  const [isCanvasModeEnabled, setIsCanvasModeEnabled] = useState(false)
+  const [queuedCanvasQuestion, setQueuedCanvasQuestion] = useState<string | null>(null)
+  const [activeCanvasContext, setActiveCanvasContext] = useState<{ messageId: string; question: string } | null>(null)
+  const [canvasPreviewPayload, setCanvasPreviewPayload] = useState<CanvasPreviewPayload | null>(null)
+  const [isCanvasPreviewOpen, setIsCanvasPreviewOpen] = useState(false)
+  const [isCanvasPreviewUpdating, setIsCanvasPreviewUpdating] = useState(false)
+  const [previewPanelWidth, setPreviewPanelWidth] = useState<number | null>(null)
+  const [isPreviewResizeActive, setIsPreviewResizeActive] = useState(false)
+  const [chatPaneWidth, setChatPaneWidth] = useState<number | null>(null)
   const [thinkingText, setThinkingText] = useState(defaultThinkingText)
   const [showThinking, setShowThinking] = useState(false)
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
@@ -1195,6 +1418,8 @@ function ChatLanding() {
   const [branchComparePayloadBySessionId, setBranchComparePayloadBySessionId] =
     useState<Record<string, ChatSessionResponse['messages']>>({})
   const messageListRef = useRef<HTMLDivElement | null>(null)
+  const chatPaneRef = useRef<HTMLDivElement | null>(null)
+  const splitLayoutRef = useRef<HTMLDivElement | null>(null)
   const renameInputRef = useRef<HTMLInputElement | null>(null)
   const copyTimeoutRef = useRef<number | null>(null)
   const thinkingTimeoutRef = useRef<number | null>(null)
@@ -1205,6 +1430,8 @@ function ChatLanding() {
   const activeGenerationIdRef = useRef<string | null>(null)
   const activeGenerationMessageIdRef = useRef<string | null>(null)
   const activeGenerationContentRef = useRef('')
+  const canvasQuestionForGenerationRef = useRef<string | null>(null)
+  const canvasGenerationBaselineRef = useRef<CanvasGenerationBaseline | null>(null)
   const { stream, addPart, reset: resetStream, seed: seedStream } = useStream()
   const sidebarOpen = isMobileLayout ? mobileSidebarOpen : desktopSidebarOpen
 
@@ -1233,6 +1460,19 @@ function ChatLanding() {
       return
     }
 
+    const storedPreference = loadSelectedModelPreference()
+    if (storedPreference && storedPreference !== selectedModel) {
+      setSelectedModel(storedPreference)
+    }
+    // Run once after mount to avoid SSR/client hydration mismatch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
     const model = selectedModel.trim()
     if (!model) {
       return
@@ -1240,6 +1480,115 @@ function ChatLanding() {
 
     window.localStorage.setItem(selectedModelStorageKey, model)
   }, [selectedModel])
+
+  useEffect(() => {
+    if (!queuedCanvasQuestion || !streamingMessageId) {
+      return
+    }
+
+    setActiveCanvasContext({
+      messageId: streamingMessageId,
+      question: queuedCanvasQuestion,
+    })
+    setQueuedCanvasQuestion(null)
+
+    setMessages((previousMessages) =>
+      previousMessages.map((message) =>
+        message.role === 'assistant'
+          ? message.id === streamingMessageId
+            ? {
+                ...message,
+                canvasContext: {
+                  question: queuedCanvasQuestion,
+                },
+              }
+            : message
+          : message,
+      ),
+    )
+  }, [queuedCanvasQuestion, streamingMessageId])
+
+  useEffect(() => {
+    if (!isCanvasPreviewOpen || isMobileLayout || !isPreviewResizeActive) {
+      return
+    }
+
+    const clampPreviewWidth = (nextWidth: number) => {
+      const containerWidth = splitLayoutRef.current?.clientWidth ?? window.innerWidth
+      const maxPreviewWidth = Math.max(previewPanelMinWidthPx, containerWidth - chatPanelMinWidthPx)
+      return Math.min(maxPreviewWidth, Math.max(previewPanelMinWidthPx, nextWidth))
+    }
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const containerBounds = splitLayoutRef.current?.getBoundingClientRect()
+      if (!containerBounds) {
+        return
+      }
+
+      const nextWidth = containerBounds.right - event.clientX
+      setPreviewPanelWidth(clampPreviewWidth(nextWidth))
+    }
+
+    const handleMouseUp = () => {
+      setIsPreviewResizeActive(false)
+    }
+
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+
+    return () => {
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isCanvasPreviewOpen, isMobileLayout, isPreviewResizeActive])
+
+  useEffect(() => {
+    if (!isCanvasPreviewOpen || isMobileLayout || previewPanelWidth === null) {
+      return
+    }
+
+    const clampPreviewWidth = (nextWidth: number) => {
+      const containerWidth = splitLayoutRef.current?.clientWidth ?? window.innerWidth
+      const maxPreviewWidth = Math.max(previewPanelMinWidthPx, containerWidth - chatPanelMinWidthPx)
+      return Math.min(maxPreviewWidth, Math.max(previewPanelMinWidthPx, nextWidth))
+    }
+
+    const handleResize = () => {
+      setPreviewPanelWidth((currentWidth) => {
+        if (currentWidth === null) {
+          return currentWidth
+        }
+
+        return clampPreviewWidth(currentWidth)
+      })
+    }
+
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [isCanvasPreviewOpen, isMobileLayout, previewPanelWidth])
+
+  useEffect(() => {
+    const paneElement = chatPaneRef.current
+    if (!paneElement || typeof ResizeObserver === 'undefined') {
+      return
+    }
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) {
+        return
+      }
+
+      setChatPaneWidth(entry.contentRect.width)
+    })
+
+    observer.observe(paneElement)
+    return () => observer.disconnect()
+  }, [])
 
   const avatarNameSource = useMemo(() => fullName.trim() || nickname.trim(), [fullName, nickname])
   const avatarInitials = useMemo(() => getInitials(avatarNameSource), [avatarNameSource])
@@ -1310,6 +1659,73 @@ function ChatLanding() {
     const activeStreamingMessage = messages.find((message) => message.id === streamingMessageId)
     return activeStreamingMessage?.content ?? ''
   }, [messages, streamingMessageId])
+
+  const latestCanvasMessageId = useMemo(() => {
+    const latest = [...messages]
+      .reverse()
+      .find((message) => message.role === 'assistant' && message.canvasContext?.question)
+    return latest?.id ?? null
+  }, [messages])
+  const canvasVersionHistory = useMemo(() => {
+    const versions: CanvasVersionHistoryItem[] = []
+    const dedupe = new Set<string>()
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]
+      if (message.role !== 'assistant' || !message.canvasContext?.question) {
+        continue
+      }
+
+      const parsed = extractCanvasStreamParts(stripAssistantImageMarkdown(message.content))
+      const code = parsed.code.trim()
+      const question = message.canvasContext.question.trim()
+      if (!code || !question) {
+        continue
+      }
+
+      const fingerprint = `${question}::${code}`
+      if (dedupe.has(fingerprint)) {
+        continue
+      }
+
+      dedupe.add(fingerprint)
+      versions.push({
+        id: message.id,
+        label: `Version ${versions.length + 1}`,
+        question,
+        code,
+      })
+    }
+
+    return versions
+  }, [messages])
+
+  const canShowChatQuickTemplates = useMemo(() => {
+    if (isMobileLayout) {
+      return true
+    }
+
+    if (chatPaneWidth === null) {
+      return true
+    }
+
+    return chatPaneWidth >= quickTemplatesMinPaneWidthPx
+  }, [chatPaneWidth, isMobileLayout])
+  const canShowCenteredHeaderTitle = useMemo(() => {
+    if (isMobileLayout) {
+      return false
+    }
+
+    if (chatPaneWidth === null) {
+      return true
+    }
+
+    const minWidth = isActiveSessionFork
+      ? headerTitleWithBranchMapMinPaneWidthPx
+      : headerTitleMinPaneWidthPx
+
+    return chatPaneWidth >= minWidth
+  }, [chatPaneWidth, isActiveSessionFork, isMobileLayout])
 
   const templateSeedText = useMemo(() => {
     const lastUserMessage = [...messages].reverse().find((message) => message.role === 'user')
@@ -1532,9 +1948,11 @@ function ChatLanding() {
       const citations = normalizeCitations(item.citations)
       const memoryContext = normalizeMemoryContext(item.memoryContext)
       const attachments = normalizeAttachments(item.attachments)
+      const canvasContext = normalizeCanvasContext(item.canvasContext)
       return createMessage(item.role, item.content, {
         ...(item.messageId !== undefined ? { messageId: item.messageId } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
+        ...(canvasContext ? { canvasContext } : {}),
         ...(citations.length > 0 ? { citations } : {}),
         ...(memoryContext.length > 0 ? { memoryContext } : {}),
         ...(item.searchedWeb !== undefined ? { searchedWeb: item.searchedWeb } : {}),
@@ -1653,26 +2071,35 @@ function ChatLanding() {
       const nextContent = generation.content || ''
 
       if (nextContent !== previousContent) {
-        ensureGenerationMessage(generationMessageId, nextContent)
-        activeGenerationContentRef.current = nextContent
+        const shouldPreserveExistingContent = previousContent.length > 0 && nextContent.length === 0
+        const shouldDeferCanvasInterimUpdate =
+          Boolean(canvasGenerationBaselineRef.current) &&
+          previousContent.length > 0 &&
+          extractCanvasStreamParts(stripAssistantImageMarkdown(nextContent)).code.length === 0 &&
+          generation.status !== 'completed'
 
-        if (nextContent.trim().length > 0) {
-          if (thinkingTimeoutRef.current !== null) {
-            window.clearTimeout(thinkingTimeoutRef.current)
-            thinkingTimeoutRef.current = null
-          }
-          setShowThinking(false)
-        }
+        if (!shouldPreserveExistingContent && !shouldDeferCanvasInterimUpdate) {
+          ensureGenerationMessage(generationMessageId, nextContent)
+          activeGenerationContentRef.current = nextContent
 
-        if (nextContent.startsWith(previousContent)) {
-          const delta = nextContent.slice(previousContent.length)
-          if (delta) {
-            addPart(delta)
+          if (nextContent.trim().length > 0) {
+            if (thinkingTimeoutRef.current !== null) {
+              window.clearTimeout(thinkingTimeoutRef.current)
+              thinkingTimeoutRef.current = null
+            }
+            setShowThinking(false)
           }
-        } else {
-          resetStream()
-          if (nextContent) {
-            addPart(nextContent)
+
+          if (nextContent.startsWith(previousContent)) {
+            const delta = nextContent.slice(previousContent.length)
+            if (delta) {
+              addPart(delta)
+            }
+          } else {
+            resetStream()
+            if (nextContent) {
+              addPart(nextContent)
+            }
           }
         }
       }
@@ -1683,20 +2110,45 @@ function ChatLanding() {
         const followUps = normalizeFollowUps(generation.followUps)
         const searchedWeb = Boolean(generation.searchedWeb ?? citations.length > 0)
         const finalizedContent = generation.content || ''
+        const preservedCanvasContent = preserveCanvasResponseContent(
+          finalizedContent,
+          canvasGenerationBaselineRef.current,
+        )
 
         setMessages((previousMessages) =>
           previousMessages.map((message) =>
-            message.id === generationMessageId
-              ? {
-                  ...message,
-                  content: finalizedContent,
-                  ...(citations.length > 0 ? { citations } : {}),
-                  ...(memoryContext.length > 0 ? { memoryContext } : {}),
-                  searchedWeb,
-                }
+            message.role === 'assistant'
+              ? message.id === generationMessageId
+                ? {
+                    ...message,
+                    content: preservedCanvasContent,
+                    ...(canvasQuestionForGenerationRef.current
+                      ? {
+                          canvasContext: {
+                            question: canvasQuestionForGenerationRef.current,
+                          },
+                        }
+                      : {}),
+                    ...(citations.length > 0 ? { citations } : {}),
+                    ...(memoryContext.length > 0 ? { memoryContext } : {}),
+                    searchedWeb,
+                  }
+                : message
               : message,
           ),
         )
+
+        const finalizedCanvasQuestion = canvasQuestionForGenerationRef.current
+        if (isCanvasPreviewOpen && finalizedCanvasQuestion) {
+          setCanvasPreviewPayload(
+            buildCanvasPreviewPayload(
+              preservedCanvasContent,
+              finalizedCanvasQuestion,
+              canvasGenerationBaselineRef.current,
+            ),
+          )
+          setIsCanvasPreviewOpen(true)
+        }
 
         if (typeof generation.thinking === 'string' && generation.thinking.trim()) {
           setThinkingText(generation.thinking)
@@ -1709,6 +2161,9 @@ function ChatLanding() {
         setSessionGenerationStatus(generation.chatSessionId, null)
         setStreamingMessageId(null)
         setIsLoading(false)
+        setIsCanvasPreviewUpdating(false)
+        canvasQuestionForGenerationRef.current = null
+        canvasGenerationBaselineRef.current = null
         return
       }
 
@@ -1718,6 +2173,9 @@ function ChatLanding() {
         setStreamingMessageId(null)
         setIsLoading(false)
         setErrorMessage(generation.errorMessage || 'Unable to complete chat response')
+        setIsCanvasPreviewUpdating(false)
+        canvasQuestionForGenerationRef.current = null
+        canvasGenerationBaselineRef.current = null
         return
       }
 
@@ -2363,6 +2821,9 @@ function ChatLanding() {
 
     setShowThinking(false)
     setIsLoading(false)
+    setIsCanvasPreviewUpdating(false)
+    canvasQuestionForGenerationRef.current = null
+    canvasGenerationBaselineRef.current = null
   }
 
   function handleOpenProfile() {
@@ -2890,7 +3351,29 @@ function ChatLanding() {
     setSessionIdPendingDelete(activeSessionId)
   }
 
-  async function requestAssistantReply(history: ChatMessage[], chatSessionId: string) {
+  async function requestAssistantReply(
+    history: ChatMessage[],
+    chatSessionId: string,
+    options?: RequestAssistantReplyOptions,
+  ) {
+    const chatSessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    const modelForRequest = selectedModel.trim().slice(0, 80)
+    const normalizedCanvasQuestion = options?.canvasQuestion?.trim().slice(0, 8_000)
+    const normalizedChatSessionId = chatSessionIdPattern.test(chatSessionId) ? chatSessionId : undefined
+
+    const clearPendingRequestState = () => {
+      if (thinkingTimeoutRef.current !== null) {
+        window.clearTimeout(thinkingTimeoutRef.current)
+        thinkingTimeoutRef.current = null
+      }
+
+      setShowThinking(false)
+      setIsLoading(false)
+      setIsCanvasPreviewUpdating(false)
+      canvasQuestionForGenerationRef.current = null
+      canvasGenerationBaselineRef.current = null
+    }
+
     setThinkingText(defaultThinkingText)
     setShowThinking(false)
 
@@ -2903,6 +3386,60 @@ function ChatLanding() {
     }, thinkingRevealDelayMs)
 
     const recentHistory = history.slice(-12)
+    const completionMessages = recentHistory
+      .map((message) => {
+        const normalizedContent = message.content.trim().slice(0, 8_000)
+        if (!normalizedContent) {
+          return null
+        }
+
+        const normalizedCanvasQuestion = message.canvasContext?.question?.trim().slice(0, 8_000)
+        const normalizedAttachments = (message.attachments ?? [])
+          .slice(0, 10)
+          .map((attachment) => {
+            const name = attachment.name.trim()
+            const mimeType = attachment.mimeType.trim()
+            if (!name || !mimeType) {
+              return null
+            }
+
+            const normalizedTextContent = attachment.textContent?.trim().slice(0, 20_000)
+            const normalizedImageDataUrl = attachment.imageDataUrl?.slice(0, 6_000_000)
+
+            return {
+              id: attachment.id,
+              name,
+              mimeType,
+              size: Math.max(0, Math.min(Math.floor(attachment.size), 30_000_000)),
+              ...(normalizedTextContent ? { textContent: normalizedTextContent } : {}),
+              ...(normalizedImageDataUrl ? { imageDataUrl: normalizedImageDataUrl } : {}),
+            }
+          })
+          .filter((attachment): attachment is ChatAttachment => attachment !== null)
+
+        return {
+          role: message.role,
+          content: normalizedContent,
+          ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
+          ...(normalizedCanvasQuestion ? { canvasContext: { question: normalizedCanvasQuestion } } : {}),
+          ...(message.citations ? { citations: message.citations } : {}),
+          ...(message.searchedWeb !== undefined ? { searchedWeb: message.searchedWeb } : {}),
+        }
+      })
+      .filter((message): message is {
+        role: ChatRole
+        content: string
+        attachments?: ChatAttachment[]
+        canvasContext?: CanvasContext
+        citations?: SerializableCitation[]
+        searchedWeb?: boolean
+      } => message !== null)
+
+    if (completionMessages.length === 0) {
+      clearPendingRequestState()
+      setErrorMessage('Unable to send message: conversation payload was empty after normalization.')
+      return
+    }
     const token = window.localStorage.getItem('lovechat_session_token')
     const lastUserMessage = [...recentHistory].reverse().find((message) => message.role === 'user')
     const keywordActivatedWebSearch =
@@ -2923,17 +3460,12 @@ function ChatLanding() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          model: selectedModel,
+          model: modelForRequest,
           useWebSearch: webSearchActive || keywordActivatedWebSearch,
           useLearningMode: learningModeActive,
-          chatSessionId,
-          messages: recentHistory.map((message) => ({
-            role: message.role,
-            content: message.content,
-            ...(message.attachments && message.attachments.length > 0 ? { attachments: message.attachments } : {}),
-            ...(message.citations ? { citations: message.citations } : {}),
-            ...(message.searchedWeb !== undefined ? { searchedWeb: message.searchedWeb } : {}),
-          })),
+          ...(normalizedCanvasQuestion ? { canvasQuestion: normalizedCanvasQuestion } : {}),
+          ...(normalizedChatSessionId ? { chatSessionId: normalizedChatSessionId } : {}),
+          messages: completionMessages,
         }),
         signal: controller.signal,
       })
@@ -2946,6 +3478,7 @@ function ChatLanding() {
           return
         }
 
+        clearPendingRequestState()
         setErrorMessage('The assistant took too long to respond. Please try again.')
         return
       }
@@ -2959,14 +3492,26 @@ function ChatLanding() {
     if (!response.ok) {
       let message = 'Unable to send message'
       try {
-        const errorPayload = (await response.json()) as { message?: string }
+        const errorPayload = (await response.json()) as {
+          message?: string
+          issues?: Array<{ path?: Array<string | number>; message?: string }>
+        }
         if (errorPayload.message) {
           message = errorPayload.message
+        }
+
+        const firstIssue = errorPayload.issues?.[0]
+        if (firstIssue?.message) {
+          const issuePath = Array.isArray(firstIssue.path) ? firstIssue.path.join('.') : ''
+          message = issuePath
+            ? `${message}: ${issuePath} - ${firstIssue.message}`
+            : `${message}: ${firstIssue.message}`
         }
       } catch {
         // Keep fallback error message.
       }
 
+      clearPendingRequestState()
       setErrorMessage(message)
       return
     }
@@ -2976,6 +3521,7 @@ function ChatLanding() {
     const generationId = payload.generationId
 
     if (!generationId) {
+      clearPendingRequestState()
       setErrorMessage('Unable to start assistant generation')
       return
     }
@@ -2983,9 +3529,19 @@ function ChatLanding() {
     touchSession(resolvedSessionId, payload.sessionTitle)
     setActiveSessionId(resolvedSessionId)
 
-    const generationMessageId = `assistant-generation-${generationId}`
-    ensureGenerationMessage(generationMessageId, '')
-    startGenerationPolling(generationId, resolvedSessionId, generationMessageId, '', payload.status)
+    const generationMessageId = options?.reuseAssistantMessageId ?? `assistant-generation-${generationId}`
+    const existingGenerationContent =
+      options?.reuseAssistantMessageId
+        ? history.find((message) => message.id === options.reuseAssistantMessageId)?.content ?? ''
+        : ''
+    ensureGenerationMessage(generationMessageId, existingGenerationContent)
+    startGenerationPolling(
+      generationId,
+      resolvedSessionId,
+      generationMessageId,
+      existingGenerationContent,
+      payload.status,
+    )
   }
 
   async function handleCopyMessage(messageId: string, content: string) {
@@ -3318,10 +3874,65 @@ function ChatLanding() {
     await submitPrompt(action.prompt, [], { silent: true })
   }
 
+  const handleConvertCodeBlockToCanvas = useCallback((payload: { code: string; language: string }) => {
+    setCanvasPreviewPayload({
+      question: `Canvas from ${payload.language.toUpperCase() || 'code'}`,
+      code: convertCodeBlockToCanvasCode(payload.code, payload.language),
+    })
+    setPreviewPanelWidth(null)
+    setIsCanvasPreviewOpen(true)
+  }, [])
+
   async function submitPrompt(nextPrompt?: string, files: File[] = [], options: SubmitPromptOptions = {}) {
     const content = (nextPrompt ?? prompt).trim()
     if (!content || isLoading) {
       return
+    }
+
+    const latestCanvasQuestion =
+      canvasPreviewPayload?.question ??
+      [...messages]
+        .reverse()
+        .find((message) => message.role === 'assistant' && message.canvasContext?.question)
+        ?.canvasContext?.question ??
+      null
+
+    const shouldGenerateCanvasResponse = isCanvasModeEnabled || isCanvasPreviewOpen
+    const canvasQuestionForRequest = shouldGenerateCanvasResponse
+      ? (latestCanvasQuestion ?? content)
+      : null
+    const canvasTargetMessage =
+      shouldGenerateCanvasResponse && latestCanvasMessageId
+        ? messages.find((message) => message.id === latestCanvasMessageId && message.role === 'assistant') ?? null
+        : null
+    const existingCanvasBaseline =
+      getCanvasBaselineFromMessage(canvasTargetMessage) ??
+      (canvasPreviewPayload
+        ? {
+            question: canvasPreviewPayload.question,
+            code: canvasPreviewPayload.code,
+            language: 'html',
+          }
+        : null)
+
+    if (canvasQuestionForRequest) {
+      setQueuedCanvasQuestion(canvasQuestionForRequest)
+      canvasQuestionForGenerationRef.current = canvasQuestionForRequest
+      canvasGenerationBaselineRef.current =
+        existingCanvasBaseline
+          ? {
+              ...existingCanvasBaseline,
+              question: canvasQuestionForRequest,
+            }
+          : null
+    } else {
+      canvasQuestionForGenerationRef.current = null
+      canvasGenerationBaselineRef.current = null
+      setIsCanvasPreviewUpdating(false)
+    }
+
+    if (isCanvasPreviewOpen && canvasQuestionForRequest) {
+      setIsCanvasPreviewUpdating(true)
     }
 
     setErrorMessage(null)
@@ -3353,10 +3964,15 @@ function ChatLanding() {
         return
       }
 
-      await requestAssistantReply(history, sessionId)
+      await requestAssistantReply(history, sessionId, {
+        ...(canvasQuestionForRequest ? { canvasQuestion: canvasQuestionForRequest } : {}),
+      })
     } catch {
       setErrorMessage('Network error while contacting chat service')
       setIsLoading(false)
+      setIsCanvasPreviewUpdating(false)
+      canvasQuestionForGenerationRef.current = null
+      canvasGenerationBaselineRef.current = null
     }
   }
 
@@ -3450,10 +4066,16 @@ function ChatLanding() {
       </div>
 
       <div
-        className="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-none border-0 bg-white shadow-sm transition-all duration-300 md:ml-3 md:rounded-[24px] md:border md:border-[#E5E5E5] dark:border-white/10 dark:bg-[#212121]"
+        ref={splitLayoutRef}
+        className={`relative flex min-w-0 flex-1 overflow-hidden md:ml-3 ${isPreviewResizeActive ? 'cursor-col-resize select-none' : ''}`}
       >
+        <div
+          ref={chatPaneRef}
+          className={`relative min-w-0 flex-1 flex-col overflow-hidden rounded-none border-0 bg-white shadow-sm transition-all duration-300 md:rounded-[24px] md:border md:border-[#E5E5E5] dark:border-white/10 dark:bg-[#212121] ${isCanvasPreviewOpen ? (previewPanelWidth === null ? 'hidden md:flex md:flex-none md:w-[320px] lg:w-[380px] xl:w-[420px]' : 'hidden md:flex md:flex-1 md:min-w-0') : 'flex'}`}
+        >
         <ChatHeader
           chatTitle={activeChatTitle}
+          hideChatTitle={isCanvasPreviewOpen && !canShowCenteredHeaderTitle}
           showSidebarToggle={isMobileLayout}
           onToggleSidebar={toggleSidebar}
           onOpenBranchMap={isActiveSessionFork ? () => setIsBranchMapOpen(true) : undefined}
@@ -3465,7 +4087,9 @@ function ChatLanding() {
           onDeleteChat={handleDeleteActiveChat}
         />
 
-        <section className="relative flex min-h-0 flex-1 flex-col px-3 pt-16 pb-3 sm:px-4 sm:pb-4">
+        <section
+          className={`relative flex min-h-0 flex-1 flex-col px-3 pt-16 sm:px-4 ${isCanvasPreviewOpen ? 'pb-0 sm:pb-0' : 'pb-3 sm:pb-4'}`}
+        >
         <div className={`flex min-h-0 w-full flex-1 flex-col ${messages.length === 0 ? 'justify-center' : ''}`}>
           {messages.length === 0 ? (
             <div className="mx-auto w-full max-w-3xl">
@@ -3492,7 +4116,9 @@ function ChatLanding() {
                 onWebSearchChange={setWebSearchActive}
                 learningModeActive={learningModeActive}
                 onLearningModeChange={setLearningModeActive}
-                showQuickTemplates={templateSeedText.length > 0 && hasVerifiableAssistantContext}
+                isCanvasMode={isCanvasModeEnabled}
+                onCanvasModeChange={setIsCanvasModeEnabled}
+                showQuickTemplates={canShowChatQuickTemplates && templateSeedText.length > 0 && hasVerifiableAssistantContext}
                 templateSeedText={templateSeedText}
                 isCodeContext={isCodeTemplateContext}
                 aiFollowUps={aiFollowUps}
@@ -3681,40 +4307,53 @@ function ChatLanding() {
                             streamingMessageId === message.id
                               ? (stream || message.content)
                               : message.content
+                          const resolvedCanvasContext =
+                            message.canvasContext ??
+                            (activeCanvasContext?.messageId === message.id
+                              ? { question: activeCanvasContext.question }
+                              : null)
+                          const isCanvasMessage = resolvedCanvasContext !== null
                           const imageUrls = extractAssistantImageUrls(renderedContent)
                           const markdownWithoutImages = stripAssistantImageMarkdown(renderedContent)
-                          const parsedContent = getAssistantRenderableContent(markdownWithoutImages)
+                          const canvasParts = isCanvasMessage
+                            ? extractCanvasStreamParts(markdownWithoutImages)
+                            : { code: '', markdownWithoutCode: markdownWithoutImages }
+                          const canvasCode = canvasParts.code
+                          const markdownForRender = canvasParts.markdownWithoutCode
+                          const parsedContent = getAssistantRenderableContent(markdownForRender)
                           const hasRenderableContent = parsedContent.markdown.trim().length > 0 || imageUrls.length > 0
                           const hasVisualizations = parsedContent.charts.length > 0
                           const hasCitations = Boolean(message.citations && message.citations.length > 0)
-                          const memoryContext = message.memoryContext ?? []
-                          const hasMemoryContext = memoryContext.length > 0
                           const showActions = hasRenderableContent || hasCitations || hasVisualizations
+                          const shouldRenderCanvasBlock = isCanvasMessage && canvasCode.length > 0
 
                           return (
                             <>
-                        {hasMemoryContext ? (
-                          <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[11px] text-gray-500">
-                            <span className="rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 font-medium">
-                              {buildMemoryUsageIndicatorLabel(memoryContext)}
-                            </span>
-                            {memoryContext.slice(0, 4).map((memory) => (
-                              <span
-                                key={`${message.id}-memory-${memory.id}`}
-                                title={`${memoryReasonLabel(memory.reason)}: ${memory.content}`}
-                                className="cursor-help rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px] text-gray-600"
-                              >
-                                {memory.category}
-                              </span>
-                            ))}
+                        {hasRenderableContent ? (
+                          <div data-export-assistant-markdown>
+                            <Markdown
+                              className="prose-p:my-3 first:prose-p:mt-0 last:prose-p:mb-0"
+                              onConvertToCanvas={handleConvertCodeBlockToCanvas}
+                            >
+                              {parsedContent.markdown}
+                            </Markdown>
                           </div>
                         ) : null}
 
-                        {hasRenderableContent ? (
-                          <div data-export-assistant-markdown>
-                            <Markdown className="prose-p:my-3 first:prose-p:mt-0 last:prose-p:mb-0">
-                              {parsedContent.markdown}
-                            </Markdown>
+                        {shouldRenderCanvasBlock ? (
+                          <div className="mt-4">
+                            <CanvasCodeBlock
+                              question={resolvedCanvasContext?.question ?? 'Canvas'}
+                              code={canvasCode}
+                              onPreview={() => {
+                                setCanvasPreviewPayload({
+                                  question: resolvedCanvasContext?.question ?? 'Canvas',
+                                  code: canvasCode || defaultCanvasCode,
+                                })
+                                setPreviewPanelWidth(null)
+                                setIsCanvasPreviewOpen(true)
+                              }}
+                            />
                           </div>
                         ) : null}
 
@@ -3865,7 +4504,9 @@ function ChatLanding() {
           ) : null}
 
           {messages.length > 0 ? (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 pb-1 pt-2">
+            <div
+              className={`pointer-events-none absolute bottom-0 z-30 ${isCanvasPreviewOpen ? 'pt-0 pb-0 -left-px -right-px' : 'inset-x-0 pb-1 pt-2'}`}
+            >
               {showScrollToBottom ? (
                 <div className="mb-2 flex justify-center px-2">
                   <button
@@ -3880,8 +4521,8 @@ function ChatLanding() {
                 </div>
               ) : null}
 
-              <div className="pb-1 pt-2">
-                <div className="pointer-events-auto mx-auto w-full max-w-3xl">
+              <div className={isCanvasPreviewOpen ? 'pb-0 pt-0' : 'pb-1 pt-2'}>
+                <div className={isCanvasPreviewOpen ? 'pointer-events-auto w-full' : 'pointer-events-auto mx-auto w-full max-w-3xl'}>
                   <ChatInput
                     prompt={prompt}
                     onPromptChange={setPrompt}
@@ -3894,7 +4535,10 @@ function ChatLanding() {
                     onWebSearchChange={setWebSearchActive}
                     learningModeActive={learningModeActive}
                     onLearningModeChange={setLearningModeActive}
+                    isCanvasMode={isCanvasModeEnabled}
+                    onCanvasModeChange={setIsCanvasModeEnabled}
                     showQuickTemplates={
+                      canShowChatQuickTemplates &&
                       !showScrollToBottom &&
                       aiFollowUps.length > 0
                     }
@@ -3903,6 +4547,7 @@ function ChatLanding() {
                     aiFollowUps={aiFollowUps}
                     quickTemplateMode="follow-up"
                     autoSendQuickTemplates={true}
+                    isBottomDocked={isCanvasPreviewOpen}
                   />
                 </div>
               </div>
@@ -3915,6 +4560,71 @@ function ChatLanding() {
           <footer className="w-full py-4 text-center text-[12px] text-[#9CA3AF] sm:py-6 sm:text-[13px]">
             LoveChat can make mistakes. Check important info
           </footer>
+        ) : null}
+        </div>
+
+        {canvasPreviewPayload && isCanvasPreviewOpen ? (
+          <>
+            {!isMobileLayout ? (
+              <button
+                type="button"
+                onMouseDown={(event) => {
+                  if (event.button !== 0) {
+                    return
+                  }
+
+                  event.preventDefault()
+                  setIsPreviewResizeActive(true)
+
+                  if (previewPanelWidth === null) {
+                    const containerBounds = splitLayoutRef.current?.getBoundingClientRect()
+                    if (containerBounds) {
+                      const nextWidth = containerBounds.right - event.clientX
+                      const maxPreviewWidth = Math.max(previewPanelMinWidthPx, containerBounds.width - chatPanelMinWidthPx)
+                      const clampedWidth = Math.min(maxPreviewWidth, Math.max(previewPanelMinWidthPx, nextWidth))
+                      setPreviewPanelWidth(clampedWidth)
+                    }
+                  }
+                }}
+                className="relative z-30 hidden w-3 shrink-0 cursor-col-resize bg-transparent md:block"
+                aria-label="Resize preview panel"
+                title="Drag to resize preview"
+              />
+            ) : null}
+
+            <div
+              className={isMobileLayout ? 'contents' : previewPanelWidth === null ? 'flex min-w-0 flex-1' : 'flex min-w-0 shrink-0'}
+              style={
+                !isMobileLayout && previewPanelWidth !== null
+                  ? {
+                      width: `${previewPanelWidth}px`,
+                      minWidth: `${previewPanelMinWidthPx}px`,
+                    }
+                  : undefined
+              }
+            >
+              <CanvasPreviewPanel
+                question={canvasPreviewPayload.question}
+                code={canvasPreviewPayload.code}
+                versions={canvasVersionHistory}
+                onRestoreVersion={(version) => {
+                  setCanvasPreviewPayload({
+                    question: version.question,
+                    code: version.code,
+                  })
+                  setIsCanvasPreviewUpdating(false)
+                }}
+                isUpdating={isCanvasPreviewUpdating}
+                isMobileLayout={isMobileLayout}
+                onClose={() => {
+                  setIsCanvasPreviewOpen(false)
+                  setCanvasPreviewPayload(null)
+                  setPreviewPanelWidth(null)
+                  setIsCanvasPreviewUpdating(false)
+                }}
+              />
+            </div>
+          </>
         ) : null}
       </div>
 

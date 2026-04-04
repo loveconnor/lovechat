@@ -145,6 +145,7 @@ export async function initializeDatabase() {
       content TEXT NOT NULL,
       model TEXT,
       attachments_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      canvas_context_json JSONB,
       citations_json JSONB NOT NULL DEFAULT '[]'::jsonb,
       memory_context_json JSONB NOT NULL DEFAULT '[]'::jsonb,
       searched_web BOOLEAN NOT NULL DEFAULT FALSE,
@@ -176,6 +177,11 @@ export async function initializeDatabase() {
   await pgPool.query(`
     ALTER TABLE chat_messages
     ADD COLUMN IF NOT EXISTS thinking_text TEXT
+  `)
+
+  await pgPool.query(`
+    ALTER TABLE chat_messages
+    ADD COLUMN IF NOT EXISTS canvas_context_json JSONB
   `)
 
   await pgPool.query(`
