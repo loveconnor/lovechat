@@ -15,6 +15,7 @@
     "check": "prettier --write . && eslint --fix"
   },
   "dependencies": {
+    "@babel/standalone": "^7.29.2",
     "@base-ui-components/react": "1.0.0-rc.0",
     "@base-ui/react": "^1.2.0",
     "@dagrejs/dagre": "^2.0.4",

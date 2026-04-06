@@ -1,5 +1,8 @@
 import { Check, Copy, Download, History, Share, Square, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import * as ReactRuntime from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import * as BabelStandalone from '@babel/standalone'
 import { CodeBlockIcon, CodeblockShiki } from '@/components/ui/code-block'
 import type { Languages as ShikiLanguage } from '@/components/ui/code-block'
 
@@ -134,6 +137,248 @@ function deriveCanvasTitleFromCode(code: string, language: ShikiLanguage) {
   }
 
   return 'Generated Canvas'
+}
+
+function escapePreviewHtml(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
+type ExecutableCanvasLanguage = 'js' | 'ts' | 'tsx'
+
+function decodePreviewHtml(value: string) {
+  return value
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&amp;', '&')
+}
+
+function getEmbeddedLegacyCanvasSource(code: string) {
+  const titleMatch = code.match(/<title>\s*Canvas from (JS|TS|TSX)\s*<\/title>/i)
+  if (!titleMatch) {
+    return null
+  }
+
+  const preMatch = code.match(/<pre>([\s\S]*?)<\/pre>/i)
+  if (!preMatch?.[1]) {
+    return null
+  }
+
+  const sourceLanguage = titleMatch[1].toLowerCase()
+  const language: ExecutableCanvasLanguage =
+    sourceLanguage === 'js' ? 'js' : sourceLanguage === 'ts' ? 'ts' : 'tsx'
+
+  return {
+    language,
+    code: decodePreviewHtml(preMatch[1]),
+  }
+}
+
+function getBabelFilenameForCanvas(language: ExecutableCanvasLanguage) {
+  if (language === 'js') {
+    return 'canvas.jsx'
+  }
+
+  if (language === 'ts') {
+    return 'canvas.ts'
+  }
+
+  return 'canvas.tsx'
+}
+
+function extractCanvasComponentCandidateNames(code: string) {
+  const candidates = new Set<string>()
+  const addCandidate = (name: string) => {
+    if (/^[A-Z][A-Za-z0-9_]*$/.test(name)) {
+      candidates.add(name)
+    }
+  }
+
+  const functionMatches = code.matchAll(/(?:export\s+)?(?:default\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)
+  for (const match of functionMatches) {
+    if (match[1]) {
+      addCandidate(match[1])
+    }
+  }
+
+  const classMatches = code.matchAll(/(?:export\s+)?(?:default\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:extends|\{)/g)
+  for (const match of classMatches) {
+    if (match[1]) {
+      addCandidate(match[1])
+    }
+  }
+
+  const variableMatches = code.matchAll(
+    /(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:\([^)]*\)\s*=>|function\s*\()/g,
+  )
+  for (const match of variableMatches) {
+    if (match[1]) {
+      addCandidate(match[1])
+    }
+  }
+
+  const defaultExportIdentifierMatch = code.match(/export\s+default\s+([A-Za-z_][A-Za-z0-9_]*)\s*;?/)
+  if (defaultExportIdentifierMatch?.[1]) {
+    addCandidate(defaultExportIdentifierMatch[1])
+  }
+
+  return Array.from(candidates)
+}
+
+function shouldWrapCanvasSourceAsJsxComponent(code: string) {
+  const trimmed = code.trim()
+  if (!trimmed) {
+    return false
+  }
+
+  if (
+    /\b(function|class|const|let|var)\b/.test(trimmed) ||
+    /\bexport\b/.test(trimmed) ||
+    /\breturn\b/.test(trimmed)
+  ) {
+    return false
+  }
+
+  return /<[A-Za-z]/.test(trimmed)
+}
+
+function sanitizeCanvasReactSource(code: string) {
+  return code
+    .replace(/^\s*import\s+React\s*,\s*\{([^}]*)\}\s+from\s+['"]react['"];?\s*$/gm, 'const {$1} = React;')
+    .replace(/^\s*import\s+\{([^}]*)\}\s+from\s+['"]react['"];?\s*$/gm, 'const {$1} = React;')
+    .replace(/^\s*import\s+\*\s+as\s+React\s+from\s+['"]react['"];?\s*$/gm, '')
+    .replace(/^\s*import\s+React\s+from\s+['"]react['"];?\s*$/gm, '')
+    .replace(/^\s*import\s+.*from\s+['"]react-dom\/client['"];?\s*$/gm, '')
+    .replace(/^\s*import\s+.*from\s+['"]react-dom['"];?\s*$/gm, '')
+    .replace(/^\s*export\s+default\s+function\s+([A-Za-z_][A-Za-z0-9_]*)/gm, 'function $1')
+    .replace(/^\s*export\s+default\s+class\s+([A-Za-z_][A-Za-z0-9_]*)/gm, 'class $1')
+    .replace(/^\s*export\s+(const|let|var|function|class)\s+/gm, '$1 ')
+    .replace(/^\s*export\s+default\s+/gm, 'const __CanvasDefaultExport = ')
+    .replace(/^\s*export\s+\{[^}]*\};?\s*$/gm, '')
+    .replace(/^\s*export\s+default\s+/gm, '')
+}
+
+function renderExecutableCanvasReactCode(
+  sourceCode: string,
+  language: ExecutableCanvasLanguage,
+  mountNode: HTMLElement,
+) {
+  const preparedSource = shouldWrapCanvasSourceAsJsxComponent(sourceCode)
+    ? `const __CanvasDefaultExport = () => (<>${sourceCode}</>);`
+    : sourceCode
+  const componentCandidateNames = extractCanvasComponentCandidateNames(preparedSource)
+  const componentCandidateChecks = componentCandidateNames
+    .map((candidateName) => `typeof ${candidateName} !== 'undefined' ? ${candidateName} : null`)
+    .join(',\n')
+  const sanitizedSource = sanitizeCanvasReactSource(preparedSource)
+  const compiled = BabelStandalone.transform(
+    `
+      const __canvas_result__ = (() => {
+        ${sanitizedSource}
+        const __candidateComponent = [
+          typeof __CanvasDefaultExport !== 'undefined' ? __CanvasDefaultExport : null,
+          ${componentCandidateChecks || 'null'},
+          typeof App !== 'undefined' ? App : null,
+          typeof TodoList !== 'undefined' ? TodoList : null,
+          typeof Component !== 'undefined' ? Component : null,
+        ].find((candidate) => typeof candidate === 'function' || (candidate && typeof candidate === 'object'));
+
+        return {
+          __CanvasComponent: __candidateComponent ?? null,
+          __CanvasRender: typeof render === 'function' ? render : null,
+        };
+      })();
+      __canvas_result__;
+    `,
+    {
+      filename: getBabelFilenameForCanvas(language),
+      presets: ['react', 'typescript'],
+    },
+  ).code
+
+  const evaluate = new Function(
+    'React',
+    `${compiled ?? ''}
+return typeof __canvas_result__ !== 'undefined' ? __canvas_result__ : undefined;`,
+  )
+  const result = evaluate(ReactRuntime) as {
+    __CanvasComponent?: unknown
+    __CanvasRender?: unknown
+  }
+
+  let root: Root | null = null
+  let didScheduleUnmount = false
+  if (result?.__CanvasComponent) {
+    root = createRoot(mountNode)
+    root.render(ReactRuntime.createElement(result.__CanvasComponent as ReactRuntime.ComponentType))
+  } else if (typeof result?.__CanvasRender === 'function') {
+    ;(result.__CanvasRender as (node: HTMLElement) => void)(mountNode)
+  } else {
+    mountNode.textContent = 'No renderable React component found. Define App, TodoList, Component, or render().'
+  }
+
+  return () => {
+    if (!root || didScheduleUnmount) {
+      return
+    }
+
+    didScheduleUnmount = true
+    const unmountRoot = () => {
+      root?.unmount()
+      root = null
+    }
+
+    if (typeof queueMicrotask === 'function') {
+      queueMicrotask(unmountRoot)
+      return
+    }
+
+    window.setTimeout(unmountRoot, 0)
+  }
+}
+
+function buildExecutablePreviewDocument(code: string, language: ShikiLanguage) {
+  const trimmedCode = code.trim()
+
+  if (!trimmedCode) {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Canvas Preview</title>
+</head>
+<body>
+  <main style="padding: 16px; font-family: Inter, Arial, sans-serif;">No preview content available.</main>
+</body>
+</html>`
+  }
+
+  if (language === 'html' || /<!doctype html|<html[\s>]/i.test(trimmedCode)) {
+    return trimmedCode
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Canvas Preview</title>
+  <style>
+    body { font-family: Inter, Arial, sans-serif; margin: 0; padding: 24px; background: #ffffff; color: #0f172a; }
+    pre { overflow: auto; border-radius: 12px; background: #0f172a; color: #e2e8f0; padding: 16px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <pre>${escapePreviewHtml(trimmedCode)}</pre>
+</body>
+</html>`
 }
 
 export function CanvasCodeBlock({ question, code, onPreview }: CanvasCodeBlockProps) {
@@ -339,6 +584,7 @@ export function CanvasPreviewPanel({
   const [activeVersionId, setActiveVersionId] = useState('__current__')
   const versionMenuRef = useRef<HTMLDivElement | null>(null)
   const previewHostRef = useRef<HTMLDivElement | null>(null)
+  const reactPreviewHostRef = useRef<HTMLDivElement | null>(null)
   const copyResetTimeoutRef = useRef<number | null>(null)
   const exportResetTimeoutRef = useRef<number | null>(null)
   const normalizedVersions = useMemo(() => {
@@ -381,8 +627,140 @@ export function CanvasPreviewPanel({
   }, [activeVersionId, code, normalizedVersions, question])
 
   const previewData = extractPreviewHtml(activeVersion.code)
+  const activeVersionLanguage = inferShikiLanguage(activeVersion.code)
+  const legacyEmbeddedSource = useMemo(() => getEmbeddedLegacyCanvasSource(activeVersion.code), [activeVersion.code])
+  const executableSourceLanguage: ExecutableCanvasLanguage | null = useMemo(() => {
+    if (legacyEmbeddedSource) {
+      return legacyEmbeddedSource.language
+    }
+
+    if (
+      activeVersionLanguage === 'js' ||
+      activeVersionLanguage === 'ts' ||
+      activeVersionLanguage === 'tsx'
+    ) {
+      return activeVersionLanguage
+    }
+
+    return null
+  }, [activeVersionLanguage, legacyEmbeddedSource])
+  const executableSourceCode = legacyEmbeddedSource?.code ?? activeVersion.code
+  const shouldUseReactRuntimePreview = executableSourceLanguage !== null
+  const shouldUseIframePreview = useMemo(() => {
+    if (shouldUseReactRuntimePreview) {
+      return false
+    }
+
+    return /<script[\s>]/i.test(activeVersion.code)
+  }, [activeVersion.code, shouldUseReactRuntimePreview])
+  const iframePreviewDocument = useMemo(
+    () => (shouldUseIframePreview ? buildExecutablePreviewDocument(activeVersion.code, activeVersionLanguage) : ''),
+    [activeVersion.code, activeVersionLanguage, shouldUseIframePreview],
+  )
 
   useEffect(() => {
+    if (shouldUseIframePreview) {
+      return
+    }
+
+    if (shouldUseReactRuntimePreview && executableSourceLanguage) {
+      const host = reactPreviewHostRef.current
+      if (!host) {
+        return
+      }
+      host.style.height = '100%'
+
+      const shell = document.createElement('div')
+      shell.style.height = '100%'
+      shell.style.width = '100%'
+      shell.style.display = 'flex'
+      shell.innerHTML = `
+        <style>
+          *, *::before, *::after {
+            box-sizing: border-box;
+          }
+
+          .lovechat-preview-root {
+            min-height: 100%;
+            height: 100%;
+            width: 100%;
+            color: #111827;
+            background: #ffffff;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+          }
+
+          @media (prefers-color-scheme: dark) {
+            .lovechat-preview-root {
+              color: #e5e7eb;
+              background: #0a0f1c;
+            }
+          }
+
+          .lovechat-react-mount {
+            min-height: 100%;
+            width: 100%;
+            height: 100%;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+          }
+
+          .lovechat-react-mount > * {
+            width: 100% !important;
+            max-width: none !important;
+            min-height: 100% !important;
+            height: 100% !important;
+            flex: 1 1 auto;
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+          }
+
+          .lovechat-react-mount > * > * {
+            min-height: 100%;
+          }
+
+          .lovechat-preview-error {
+            margin: 0;
+            white-space: pre-wrap;
+            color: #991b1b;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            border-radius: 12px;
+            padding: 12px;
+          }
+        </style>
+        <div class="lovechat-preview-root">
+          <div class="lovechat-react-mount"></div>
+        </div>
+      `
+
+      host.replaceChildren(shell)
+      const mountNode = host.querySelector('.lovechat-react-mount')
+      if (!(mountNode instanceof HTMLElement)) {
+        return
+      }
+
+      let dispose: (() => void) | undefined
+      try {
+        dispose = renderExecutableCanvasReactCode(
+          executableSourceCode,
+          executableSourceLanguage,
+          mountNode,
+        )
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        mountNode.innerHTML = `<pre class="lovechat-preview-error">Unable to render preview:\n${escapePreviewHtml(message)}</pre>`
+      }
+
+      return () => {
+        dispose?.()
+        host.replaceChildren()
+      }
+    }
+
     const host = previewHostRef.current
     if (!host) {
       return
@@ -390,6 +768,8 @@ export function CanvasPreviewPanel({
 
     const shadowRoot = host.shadowRoot ?? host.attachShadow({ mode: 'open' })
     const shell = document.createElement('div')
+      shell.style.height = '100%'
+      shell.style.width = '100%'
     shell.innerHTML = `
       <style>
         :host {
@@ -422,7 +802,16 @@ export function CanvasPreviewPanel({
     `
 
     shadowRoot.replaceChildren(shell)
-  }, [previewData.bodyClass, previewData.bodyHtml, previewData.styles, previewData.stylesheetLinks])
+  }, [
+    executableSourceCode,
+    executableSourceLanguage,
+    previewData.bodyClass,
+    previewData.bodyHtml,
+    previewData.styles,
+    previewData.stylesheetLinks,
+    shouldUseIframePreview,
+    shouldUseReactRuntimePreview,
+  ])
 
   useEffect(() => {
     setActiveVersionId('__current__')
@@ -616,7 +1005,20 @@ export function CanvasPreviewPanel({
       </header>
 
       <div className="no-scrollbar relative flex-1 overflow-y-auto bg-white p-0 text-gray-900 transition-colors dark:bg-[#0a0f1c] dark:text-white">
-        <div ref={previewHostRef} className="min-h-full w-full" />
+        {shouldUseIframePreview ? (
+          <iframe
+            title="Canvas preview"
+            srcDoc={iframePreviewDocument}
+            sandbox="allow-scripts allow-forms allow-modals allow-popups"
+            className="h-full min-h-full w-full border-0 bg-white"
+          />
+        ) : shouldUseReactRuntimePreview ? (
+          <div className="absolute inset-0 overflow-y-auto">
+            <div ref={reactPreviewHostRef} className="h-full min-h-full w-full" />
+          </div>
+        ) : (
+          <div ref={previewHostRef} className="min-h-full w-full" />
+        )}
 
         {isUpdating ? (
           <>

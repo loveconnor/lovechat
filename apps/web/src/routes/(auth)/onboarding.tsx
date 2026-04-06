@@ -497,7 +497,7 @@ function OnboardingPage() {
 						disabled={isStartingChat}
 						className={`fade-in mt-8 w-full rounded-lg bg-[#1a1a1a] py-3.5 font-medium text-white transition-colors hover:bg-black dark:bg-[#f2f2f2] dark:text-[#181818] dark:hover:bg-white ${showStartBtn ? '' : 'hidden'} ${startVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'}`}
 					>
-						{isStartingChat ? 'Saving...' : 'Let&apos;s Start Chatting'}
+						{isStartingChat ? 'Saving...' : "Let's Start Chatting"}
 					</button>
 				</div>
 			</div>
