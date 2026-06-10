@@ -5,7 +5,7 @@ import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { LayoutTemplate } from "lucide-react";
+import { Download, LayoutTemplate, RefreshCcw } from "love-ui/icons";
 import {
   CodeBlock,
   CodeBlockHeader,
@@ -513,11 +513,7 @@ const DEFAULT_COMPONENTS: Partial<Components> = {
             title="Download"
             className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/80 text-gray-800 shadow-sm backdrop-blur-md transition-all hover:bg-white hover:text-black focus:outline-none dark:bg-black/60 dark:text-gray-200 dark:hover:bg-black/80 dark:hover:text-white"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
+            <Download className="size-4" aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -525,12 +521,7 @@ const DEFAULT_COMPONENTS: Partial<Components> = {
             title="Variations"
             className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/80 text-gray-800 shadow-sm backdrop-blur-md transition-all hover:bg-white hover:text-black focus:outline-none dark:bg-black/60 dark:text-gray-200 dark:hover:bg-black/80 dark:hover:text-white"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M21 2v6h-6" />
-              <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
-              <path d="M3 22v-6h6" />
-              <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
-            </svg>
+            <RefreshCcw className="size-4" aria-hidden="true" />
           </button>
         </div>
       </div>

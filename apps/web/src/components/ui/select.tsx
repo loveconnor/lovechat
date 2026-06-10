@@ -2,10 +2,11 @@
 
 import { Select as SelectPrimitive } from "@base-ui-components/react/select"
 import {
-  ChevronDownIcon,
-  ChevronsUpDownIcon,
-  ChevronUpIcon,
-} from "lucide-react"
+  Check,
+  ChevronDown as ChevronDownIcon,
+  ChevronsUpDown as ChevronsUpDownIcon,
+  ChevronUp as ChevronUpIcon,
+} from "love-ui/icons"
 
 import { cn } from "@/lib/utils"
 
@@ -45,7 +46,8 @@ function SelectValue({
   children,
   ...props
 }: SelectPrimitive.Value.Props & { placeholder?: string }) {
-  const resolvedChildren = children ?? ((value: unknown) => value ?? placeholder)
+  const resolvedChildren =
+    children ?? ((value: unknown) => value ?? placeholder)
 
   return (
     <SelectPrimitive.Value
@@ -72,7 +74,7 @@ function SelectPopup({
     <SelectPrimitive.Portal>
       <SelectPrimitive.Positioner
         data-slot="select-positioner"
-        className="z-[140] select-none"
+        className="z-[200] select-none"
         sideOffset={sideOffset}
         alignItemWithTrigger={alignItemWithTrigger}
       >
@@ -125,19 +127,7 @@ function SelectItem({
       {...props}
     >
       <SelectPrimitive.ItemIndicator className="col-start-1">
-        <svg
-          xmlns="http://www.w3.org/1500/svg"
-          width="24"
-          height="24"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M5.252 12.7 10.2 18.63 18.748 5.37" />
-        </svg>
+        <Check />
       </SelectPrimitive.ItemIndicator>
       <SelectPrimitive.ItemText className="col-start-2">
         {children}

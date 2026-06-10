@@ -4,17 +4,19 @@ import {
   Check,
   ChevronDown,
   Copy,
+  Download,
   FileArchive,
-  FileAudio,
-  FileCode2,
+  FileMusic as FileAudio,
+  FileCode as FileCode2,
   FileImage,
   FileSpreadsheet,
   FileText,
-  FileVideo,
+  FilePlay as FileVideo,
   GitBranch,
   Pencil,
   RotateCcw,
-} from 'lucide-react'
+  X,
+} from 'love-ui/icons'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CitationList } from '#/components/ai/citation'
 import { CanvasCodeBlock, CanvasPreviewPanel, defaultCanvasCode } from '#/components/ai/chat-canvas'
@@ -25,6 +27,10 @@ import { Markdown } from '#/components/ai/markdown'
 import { SettingsDialog } from '#/components/ai/settings-dialog'
 import { ChartCard } from '#/components/ai/visualization/chart-card'
 import { parseVisualizationContent } from '#/components/ai/visualization/parse'
+import { Button } from '#/components/ui/button'
+import { Input } from '#/components/ui/input'
+import { Label } from '#/components/ui/label'
+import { Textarea } from '#/components/ui/textarea'
 import AIThinking from '#/components/ai/thinking'
 import { safeParseSerializableCitation } from '#/components/ai/citation/schema'
 import { useStream } from '#/components/ai/use-stream'
@@ -4219,28 +4225,31 @@ function ChatLanding() {
                         <div className="lovechat-accent-soft-static rounded-[20px] rounded-tr-[4px] px-5 py-3.5 text-[15px] leading-relaxed shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
                         {editingMessageId === message.id ? (
                           <div className="flex min-w-[280px] flex-col gap-3 sm:min-w-[400px]">
-                            <textarea
+                            <Textarea
                               value={editingDraft}
                               onChange={(event) => setEditingDraft(event.target.value)}
                               rows={3}
-                              className="lovechat-accent-focus w-full resize-none rounded-xl border border-[#E5E5E5] bg-white p-3 text-[15px] text-gray-900 outline-none shadow-sm"
+                              className="bg-white text-[15px] text-gray-900 shadow-sm"
                             />
                             <div className="flex justify-end gap-2">
-                              <button
+                              <Button
                                 type="button"
+                                variant="outline"
+                                size="sm"
                                 onClick={handleCancelEditUserMessage}
-                                className="lovechat-accent-surface rounded-[8px] border border-[#E5E5E5] bg-white px-4 py-1.5 text-[13px] font-medium text-gray-700 transition-colors"
+                                className="text-[13px]"
                               >
                                 Cancel
-                              </button>
-                              <button
+                              </Button>
+                              <Button
                                 type="button"
+                                size="sm"
                                 onClick={() => void handleSaveEditUserMessage(message.id)}
                                 disabled={isLoading}
-                                className="lovechat-accent-button rounded-[8px] px-4 py-1.5 text-[13px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                                className="text-[13px]"
                               >
                                 Save
-                              </button>
+                              </Button>
                             </div>
                           </div>
                         ) : (
@@ -4251,19 +4260,23 @@ function ChatLanding() {
 
                       {editingMessageId !== message.id ? (
                         <div className="mt-1.5 flex items-center gap-2 px-2 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
-                          <button
+                          <Button
                             type="button"
+                            variant="ghost"
+                            size="icon-sm"
                             onClick={() => handleStartEditUserMessage(message)}
-                            className="p-1 text-gray-400 transition-colors hover:text-gray-600"
+                            className="text-gray-400 hover:text-gray-600"
                             aria-label="Edit message"
                             title="Edit"
                           >
                             <Pencil className="size-3.5" />
-                          </button>
-                          <button
+                          </Button>
+                          <Button
                             type="button"
+                            variant="ghost"
+                            size="icon-sm"
                             onClick={() => void handleCopyMessage(message.id, message.content)}
-                            className={`p-1 transition-colors ${copiedMessageId === message.id ? 'text-green-500' : 'text-gray-400 hover:text-gray-600'}`}
+                            className={copiedMessageId === message.id ? 'text-green-500' : 'text-gray-400 hover:text-gray-600'}
                             aria-label="Copy message"
                             title="Copy"
                           >
@@ -4272,17 +4285,19 @@ function ChatLanding() {
                             ) : (
                               <Copy className="size-3.5" />
                             )}
-                          </button>
-                          <button
+                          </Button>
+                          <Button
                             type="button"
+                            variant="ghost"
+                            size="icon-sm"
                             onClick={() => handleOpenForkDialog(message.id)}
-                            className="p-1 text-gray-400 transition-colors hover:text-gray-600"
+                            className="text-gray-400 hover:text-gray-600"
                             aria-label="Fork chat from here"
                             title="Fork chat from here"
                             disabled={isLoading}
                           >
                             <GitBranch className="size-3.5" />
-                          </button>
+                          </Button>
 
                           {message.messageId !== undefined &&
                           (branchesByForkMessageId[message.messageId]?.length ?? 0) > 0 ? (
@@ -4378,11 +4393,7 @@ function ChatLanding() {
                                     title="Download"
                                     className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/80 text-gray-800 shadow-sm backdrop-blur-md transition-all hover:bg-white hover:text-black focus:outline-none dark:bg-black/60 dark:text-gray-200 dark:hover:bg-black/80 dark:hover:text-white"
                                   >
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                      <polyline points="7 10 12 15 17 10" />
-                                      <line x1="12" y1="15" x2="12" y2="3" />
-                                    </svg>
+                                    <Download className="size-4" aria-hidden="true" />
                                   </button>
                                 </div>
                               </div>
@@ -4411,10 +4422,12 @@ function ChatLanding() {
                             />
                           ) : null}
 
-                          <button
+                          <Button
                             type="button"
+                            variant="ghost"
+                            size="icon-sm"
                             onClick={() => void handleCopyAssistantResponse(message)}
-                            className={`p-1 transition-colors ${copiedMessageId === message.id ? 'text-green-500' : 'text-gray-400 hover:text-gray-600'}`}
+                            className={copiedMessageId === message.id ? 'text-green-500' : 'text-gray-400 hover:text-gray-600'}
                             aria-label="Copy response"
                             title="Copy"
                           >
@@ -4423,23 +4436,27 @@ function ChatLanding() {
                             ) : (
                               <Copy className="size-3.5" />
                             )}
-                          </button>
+                          </Button>
 
-                          <button
+                          <Button
                             type="button"
+                            variant="ghost"
+                            size="icon-sm"
                             onClick={() => void handleRetryAssistantMessage(message.id)}
-                            className="p-1 text-gray-400 transition-colors hover:text-gray-600"
+                            className="text-gray-400 hover:text-gray-600"
                             aria-label="Retry response"
                             title="Retry"
                             disabled={isLoading}
                           >
                             <RotateCcw className="size-3.5" />
-                          </button>
+                          </Button>
 
-                          <button
+                          <Button
                             type="button"
+                            variant="ghost"
+                            size="icon-sm"
                             onClick={() => void handleRememberAssistantMessage(message)}
-                            className={`p-1 transition-colors ${recentlyRememberedMessageId === message.id ? 'text-green-500' : 'text-gray-400 hover:text-gray-600'}`}
+                            className={recentlyRememberedMessageId === message.id ? 'text-green-500' : 'text-gray-400 hover:text-gray-600'}
                             aria-label="Add response to memory"
                             title="Add to memory"
                             disabled={isLoading}
@@ -4449,18 +4466,20 @@ function ChatLanding() {
                             ) : (
                               <BookMarked className="size-3.5" />
                             )}
-                          </button>
+                          </Button>
 
-                          <button
+                          <Button
                             type="button"
+                            variant="ghost"
+                            size="icon-sm"
                             onClick={() => handleOpenForkDialog(message.id)}
-                            className="p-1 text-gray-400 transition-colors hover:text-gray-600"
+                            className="text-gray-400 hover:text-gray-600"
                             aria-label="Fork chat from here"
                             title="Fork chat from here"
                             disabled={isLoading}
                           >
                             <GitBranch className="size-3.5" />
-                          </button>
+                          </Button>
 
                           {message.messageId !== undefined &&
                           (branchesByForkMessageId[message.messageId]?.length ?? 0) > 0 ? (
@@ -4808,36 +4827,39 @@ function ChatLanding() {
             </div>
 
             <div className="mt-4">
-              <label className="mb-1 block text-[12px] font-medium text-gray-600" htmlFor="fork-title-input">
+              <Label className="mb-1 block text-[12px] font-medium text-gray-600" htmlFor="fork-title-input">
                 Branch title
-              </label>
-              <input
+              </Label>
+              <Input
                 id="fork-title-input"
                 value={forkTitleDraft}
                 onChange={(event) => setForkTitleDraft(event.target.value)}
                 placeholder={buildForkTitle(forkIntent, '', activeSession?.title ?? 'New chat')}
                 maxLength={120}
-                className="w-full rounded-[10px] border border-[#E5E5E5] bg-white px-3 py-2 text-[14px] text-gray-900 outline-none transition-colors focus:border-gray-400"
+                className="bg-white text-[14px] text-gray-900"
               />
             </div>
 
             <div className="mt-4 flex items-center justify-end gap-2">
-              <button
+              <Button
                 type="button"
+                variant="outline"
+                size="sm"
                 onClick={closeForkDialog}
-                className="rounded-md border border-gray-300 px-3 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-50"
+                className="text-[13px]"
                 disabled={isForkSaving}
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                size="sm"
                 onClick={() => void submitForkDialog()}
-                className="rounded-md border border-blue-300 bg-blue-50 px-3 py-1.5 text-[13px] font-medium text-blue-800 hover:bg-blue-100 disabled:opacity-60"
+                className="text-[13px]"
                 disabled={isForkSaving || !forkTargetMessage}
               >
                 {isForkSaving ? 'Creating branch...' : 'Create branch'}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -4851,20 +4873,22 @@ function ChatLanding() {
               Are you sure you want to delete this chat? This action cannot be undone.
             </p>
             <div className="mt-4 flex items-center justify-end gap-2">
-              <button
+              <Button
                 type="button"
+                variant="ghost"
                 onClick={() => setSessionIdPendingDelete(null)}
-                className="rounded-[10px] px-4 py-2 text-[14px] font-medium text-gray-700 transition-colors hover:bg-gray-100"
+                className="text-[14px] text-gray-700"
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                variant="destructive"
                 onClick={() => void handleDeleteSession(sessionIdPendingDelete)}
-                className="rounded-[10px] bg-red-600 px-4 py-2 text-[14px] font-medium text-white shadow-sm transition-colors hover:bg-red-700"
+                className="text-[14px]"
               >
                 Delete
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -4884,7 +4908,7 @@ function ChatLanding() {
               Choose a new title for this chat session.
             </p>
 
-            <input
+            <Input
               ref={renameInputRef}
               type="text"
               value={renameDialogDraft}
@@ -4900,28 +4924,30 @@ function ChatLanding() {
                   closeRenameDialog()
                 }
               }}
-              className="w-full rounded-[10px] border border-[#E5E5E5] bg-white px-3 py-2 text-[14px] text-gray-900 outline-none transition-colors focus:border-gray-400"
+              className="bg-white text-[14px] text-gray-900"
               placeholder="Chat title"
               maxLength={120}
             />
 
             <div className="mt-4 flex items-center justify-end gap-2">
-              <button
+              <Button
                 type="button"
+                variant="ghost"
                 onClick={closeRenameDialog}
-                className="rounded-[10px] px-4 py-2 text-[14px] font-medium text-gray-700 transition-colors hover:bg-gray-100"
+                className="text-[14px] text-gray-700"
                 disabled={isRenameSaving}
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                variant="secondary"
                 onClick={() => void submitRenameDialog()}
-                className="rounded-[10px] bg-[#E5E5E5] px-4 py-2 text-[14px] font-medium text-[#111827] shadow-sm transition-colors hover:bg-gray-200 disabled:opacity-60"
+                className="text-[14px]"
                 disabled={isRenameSaving || !renameDialogDraft.trim()}
               >
                 {isRenameSaving ? 'Saving...' : 'Save'}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -4941,20 +4967,22 @@ function ChatLanding() {
               Clear all messages in this chat view?
             </p>
             <div className="mt-4 flex items-center justify-end gap-2">
-              <button
+              <Button
                 type="button"
+                variant="ghost"
                 onClick={closeClearDialog}
-                className="rounded-[10px] px-4 py-2 text-[14px] font-medium text-gray-700 transition-colors hover:bg-gray-100"
+                className="text-[14px] text-gray-700"
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                variant="secondary"
                 onClick={confirmClearDialog}
-                className="rounded-[10px] bg-[#E5E5E5] px-4 py-2 text-[14px] font-medium text-[#111827] shadow-sm transition-colors hover:bg-gray-200"
+                className="text-[14px]"
               >
                 Clear
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -4984,10 +5012,7 @@ function ChatLanding() {
                 className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-white/10 dark:hover:text-gray-200"
                 aria-label="Close file preview"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
+                <X className="size-[18px]" aria-hidden="true" />
               </button>
             </div>
 

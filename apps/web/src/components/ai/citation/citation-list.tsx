@@ -1,16 +1,15 @@
 "use client";
 
 import * as React from "react";
-import type { LucideIcon } from "lucide-react";
 import {
   FileText,
   Globe,
-  Code2,
+  Code as Code2,
   Newspaper,
   Database,
   File,
   ExternalLink,
-} from "lucide-react";
+} from "love-ui/icons";
 import { cn, Popover, PopoverContent, PopoverTrigger } from "./_adapter";
 import { Citation } from "./citation";
 import type {
@@ -23,7 +22,9 @@ import {
   resolveSafeNavigationHref,
 } from "../shared/media";
 
-const TYPE_ICONS: Record<CitationType, LucideIcon> = {
+type IconComponent = React.ComponentType<React.SVGProps<SVGSVGElement> & { size?: number | string; strokeWidth?: number | string }>;
+
+const TYPE_ICONS: Record<CitationType, IconComponent> = {
   webpage: Globe,
   document: FileText,
   article: Newspaper,

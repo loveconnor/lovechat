@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import { LoaderCircle as Loader2 } from 'love-ui/icons'
 import { cn } from '#/lib/utils'
 
 const TIMER_CONFIG = {

@@ -1,65 +1,12 @@
 "use client"
 
-import * as React from "react"
-import { mergeProps } from "@base-ui-components/react/merge-props"
 import { Popover as PopoverPrimitive } from "@base-ui-components/react/popover"
 
-import { cn } from "#/lib/utils"
+import { cn } from "@/lib/utils"
 
 const Popover = PopoverPrimitive.Root
 
-type PopoverTriggerProps = PopoverPrimitive.Trigger.Props & {
-  asChild?: boolean
-  children?: React.ReactNode
-}
-
-function PopoverTrigger({
-  asChild,
-  children,
-  ...props
-}: PopoverTriggerProps) {
-  if (asChild) {
-    if (!React.isValidElement(children)) {
-      if (process.env.NODE_ENV !== "production") {
-        console.warn(
-          "[loveui] PopoverTrigger with `asChild` expects a single React element child."
-        )
-      }
-      return null
-    }
-
-    const child = children as React.ReactElement
-
-    return (
-      <PopoverPrimitive.Trigger
-        {...props}
-        render={(triggerProps) => {
-          const { ref: triggerRef, ...restTriggerProps } = triggerProps
-          const { asChild: _childAsChild, ...restChildProps } =
-            (child.props ?? {}) as Record<string, unknown>
-
-          const childRef = (child as any).ref as
-            | React.Ref<HTMLElement>
-            | null
-            | undefined
-
-          const mergedProps = mergeProps(restTriggerProps, restChildProps)
-
-          if (!mergedProps["data-slot"]) {
-            mergedProps["data-slot"] = "popover-trigger"
-          }
-
-          mergedProps.ref = composeRefs(
-            triggerRef as React.Ref<HTMLElement>,
-            childRef ?? undefined
-          )
-
-          return React.cloneElement(child, mergedProps)
-        }}
-      />
-    )
-  }
-
+function PopoverTrigger(props: PopoverPrimitive.Trigger.Props) {
   return <PopoverPrimitive.Trigger data-slot="popover-trigger" {...props} />
 }
 
@@ -136,23 +83,4 @@ export {
   PopoverTitle,
   PopoverDescription,
   PopoverClose,
-}
-
-function composeRefs<T>(
-  ...refs: Array<React.Ref<T> | undefined>
-): (instance: T | null) => void {
-  return (instance) => {
-    for (const ref of refs) {
-      if (!ref) continue
-      if (typeof ref === "function") {
-        ref(instance)
-      } else {
-        try {
-          ;(ref as React.MutableRefObject<T | null>).current = instance
-        } catch {
-          // ignore assignment errors for immutable refs
-        }
-      }
-    }
-  }
 }

@@ -1,8 +1,7 @@
 import * as React from "react"
-import type { ComponentPropsWithoutRef } from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 
-import { cn } from "#/lib/utils"
+import { cn } from "@/lib/utils"
 
 const cardVariants = cva(
   "relative flex flex-col gap-6 rounded-2xl py-6 text-card-foreground",
@@ -10,7 +9,7 @@ const cardVariants = cva(
     variants: {
       variant: {
         default:
-          "bg-card ring-1 ring-foreground/6.5 shadow-lg shadow-foreground/5 dark:shadow-black/10",
+          "bg-card shadow-lg ring-1 shadow-foreground/5 ring-foreground/6.5 dark:shadow-black/10",
         soft: "bg-muted",
         mixed: "border bg-muted",
         outline: "bg-card ring-1 ring-border",
@@ -36,7 +35,7 @@ function Card({ className, variant, ...props }: CardProps) {
   )
 }
 
-function CardHeader({ className, ...props }: ComponentPropsWithoutRef<"div">) {
+function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-header"
@@ -49,7 +48,7 @@ function CardHeader({ className, ...props }: ComponentPropsWithoutRef<"div">) {
   )
 }
 
-function CardTitle({ className, ...props }: ComponentPropsWithoutRef<"div">) {
+function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-title"
@@ -59,7 +58,7 @@ function CardTitle({ className, ...props }: ComponentPropsWithoutRef<"div">) {
   )
 }
 
-function CardDescription({ className, ...props }: ComponentPropsWithoutRef<"div">) {
+function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-description"
@@ -69,7 +68,7 @@ function CardDescription({ className, ...props }: ComponentPropsWithoutRef<"div"
   )
 }
 
-function CardAction({ className, ...props }: ComponentPropsWithoutRef<"div">) {
+function CardAction({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-action"
@@ -82,7 +81,7 @@ function CardAction({ className, ...props }: ComponentPropsWithoutRef<"div">) {
   )
 }
 
-function CardPanel({ className, ...props }: ComponentPropsWithoutRef<"div">) {
+function CardPanel({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-content"
@@ -92,7 +91,7 @@ function CardPanel({ className, ...props }: ComponentPropsWithoutRef<"div">) {
   )
 }
 
-function CardFooter({ className, ...props }: ComponentPropsWithoutRef<"div">) {
+function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-footer"

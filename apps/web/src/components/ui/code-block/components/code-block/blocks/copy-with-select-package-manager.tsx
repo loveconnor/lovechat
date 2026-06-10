@@ -25,8 +25,8 @@ import {
 } from "../../ui/dropdown-menu";
 
 import { cn } from "../../../utils/cn";
-import { Bun, NPM, PNPM, Yarn } from "@react-symbols/icons";
-import { CheckIcon, ChevronDownIcon } from "lucide-react";
+import { Bun, PNPM } from "love-ui/logos";
+import { Check as CheckIcon, ChevronDown as ChevronDownIcon, Package } from "love-ui/icons";
 
 interface CodeBlockSelectPkgProps {
   command: string;
@@ -45,7 +45,7 @@ const Commands: Command[] = [
   {
     name: "npm",
     install: "npm i",
-    icon: NPM,
+    icon: Package,
     dlx: "npx",
   },
   {
@@ -57,7 +57,7 @@ const Commands: Command[] = [
   {
     name: "yarn",
     install: "yarn add",
-    icon: Yarn,
+    icon: Package,
     dlx: "yarn dlx",
   },
   {

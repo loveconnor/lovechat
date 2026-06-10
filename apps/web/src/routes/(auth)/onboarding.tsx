@@ -1,5 +1,10 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useMemo, useState } from 'react'
+import { ArrowUp, Circle, CircleCheck, Hand, ShieldAlert } from 'love-ui/icons'
+
+import { Button } from '#/components/ui/button'
+import { Input } from '#/components/ui/input'
+import { Label } from '#/components/ui/label'
 
 export const Route = createFileRoute('/(auth)/onboarding')({
 	component: OnboardingPage,
@@ -314,66 +319,61 @@ function OnboardingPage() {
 						className={`fade-in mt-6 max-w-lg ${showFormBox ? '' : 'hidden'} ${formVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'}`}
 					>
 						<div className="relative min-h-[80px] rounded-xl border border-gray-200 p-5 dark:border-white/10 dark:bg-[#202020]">
-							<div className="relative">
-								<input
+							<div className="relative pr-24">
+								<Label
+									htmlFor="fullName"
+									className="mb-1 text-[11px] font-medium text-gray-500 dark:text-gray-400"
+								>
+									Nice to meet you, I&apos;m...
+								</Label>
+								<Input
 									type="text"
 									id="fullName"
-									className="peer w-full bg-transparent pt-5 pb-1 text-lg text-gray-900 placeholder-transparent outline-none disabled:text-gray-500 dark:text-gray-100 dark:disabled:text-gray-500"
 									placeholder="Nice to meet you, I'm..."
 									autoComplete="off"
 									value={fullName}
 									onChange={(event) => setFullName(event.target.value)}
 									disabled={sendState === 'sent'}
+									size="lg"
+									className="border-0 bg-transparent text-lg text-gray-900 shadow-none ring-0 before:hidden has-focus-visible:border-transparent has-focus-visible:ring-0 dark:bg-transparent dark:text-gray-100"
 								/>
-								<label
-									htmlFor="fullName"
-									className="pointer-events-none absolute top-0 left-0 text-[11px] font-medium text-gray-500 transition-all peer-placeholder-shown:top-1 peer-placeholder-shown:text-base peer-placeholder-shown:text-gray-400 peer-focus:top-0 peer-focus:text-[11px] peer-focus:text-gray-500 dark:text-gray-400 dark:peer-placeholder-shown:text-gray-500 dark:peer-focus:text-gray-400"
-								>
-									Nice to meet you, I&apos;m...
-								</label>
 							</div>
 
 							<div
 								className={`mt-4 transition-opacity duration-300 ${showNickname ? '' : 'hidden'} ${showNickname ? 'opacity-100' : 'opacity-0'}`}
 							>
-								<label className="mb-1 block text-[11px] font-medium text-gray-500 dark:text-gray-400">
+								<Label
+									htmlFor="nickName"
+									className="mb-1 text-[11px] font-medium text-gray-500 dark:text-gray-400"
+								>
 									But you can call me...
-								</label>
-								<input
+								</Label>
+								<Input
 									type="text"
 									id="nickName"
-									className="w-full bg-transparent text-lg text-gray-900 outline-none disabled:text-gray-500 dark:text-gray-100 dark:disabled:text-gray-500"
 									readOnly={sendState === 'sent'}
 									tabIndex={-1}
 									placeholder=""
 									value={nickname}
 									onChange={(event) => setNickname(event.target.value)}
 									disabled={sendState === 'sent'}
+									size="lg"
+									className="border-0 bg-transparent text-lg text-gray-900 shadow-none ring-0 before:hidden has-focus-visible:border-transparent has-focus-visible:ring-0 dark:bg-transparent dark:text-gray-100"
 								/>
 							</div>
 
-							<button
+							<Button
 								type="button"
+								size="sm"
 								onClick={() => void handleSendName()}
 								disabled={!fullName.trim() || sendState === 'sent' || isBooting || isSendingName}
-								className={`absolute top-4 right-4 flex items-center gap-1.5 rounded px-4 py-2 text-[13px] transition-opacity duration-300 disabled:opacity-50 ${showSendBtn ? '' : 'hidden'} ${showSendBtn ? 'opacity-100' : 'opacity-0'} ${sendState === 'sent' ? 'bg-gray-300 text-gray-600 dark:bg-gray-700 dark:text-gray-300' : 'bg-[#1a1a1a] text-white hover:bg-black dark:bg-[#f2f2f2] dark:text-[#181818] dark:hover:bg-white'}`}
+								className={`absolute top-4 right-4 gap-1.5 rounded px-4 py-2 text-[13px] transition-opacity duration-300 disabled:opacity-50 ${showSendBtn ? '' : 'hidden'} ${showSendBtn ? 'opacity-100' : 'opacity-0'} ${sendState === 'sent' ? 'border-gray-300 bg-gray-300 text-gray-600 dark:border-gray-700 dark:bg-gray-700 dark:text-gray-300' : 'border-[#1a1a1a] bg-[#1a1a1a] text-white hover:bg-black focus-visible:ring-[#1a1a1a]/24 dark:border-[#f2f2f2] dark:bg-[#f2f2f2] dark:text-[#181818] dark:hover:bg-white dark:focus-visible:ring-white/24'}`}
 							>
 								{sendState === 'sent' ? 'Sent ✓' : 'Send'}
 								{sendState === 'sent' ? null : (
-									<svg
-										width="12"
-										height="12"
-										viewBox="0 0 24 24"
-										fill="none"
-										stroke="currentColor"
-										strokeWidth="2"
-										strokeLinecap="round"
-										strokeLinejoin="round"
-									>
-										<path d="M12 19V5M5 12l7-7 7 7" />
-									</svg>
+									<ArrowUp className="size-3" />
 								)}
-							</button>
+							</Button>
 						</div>
 						<div className="mt-2 pr-2 text-right text-[10px] text-gray-400 dark:text-gray-500">
 							You can always change this later
@@ -395,20 +395,7 @@ function OnboardingPage() {
 					>
 						<div className="flex items-start gap-4">
 							<div className="flex-shrink-0 rounded-lg bg-[#1a1a1a] p-2.5">
-								<svg
-									className="h-4 w-4 text-white"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									strokeWidth="2"
-									strokeLinecap="round"
-									strokeLinejoin="round"
-								>
-									<path d="M18 11V6a2 2 0 0 0-4 0v5" />
-									<path d="M14 10V4a2 2 0 0 0-4 0v6" />
-									<path d="M10 10.5V3a2 2 0 0 0-4 0v9" />
-									<path d="M6 13v-1a2 2 0 0 0-4 0v4.5A5.5 5.5 0 0 0 7.5 22h3c2.76 0 5-2.24 5-5v-5a2 2 0 0 0-4 0" />
-								</svg>
+								<Hand className="size-4 text-white" />
 							</div>
 							<p className="pt-0.5 text-[13px] leading-relaxed text-gray-700 dark:text-gray-300">
 								LoveChat&apos;s <a href="#" className="underline">Usage Policy</a> prohibits using Hart for
@@ -418,19 +405,7 @@ function OnboardingPage() {
 
 						<div className="flex items-start gap-4">
 							<div className="flex-shrink-0 rounded-lg bg-[#1a1a1a] p-2.5">
-								<svg
-									className="h-4 w-4 text-white"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									strokeWidth="2"
-									strokeLinecap="round"
-									strokeLinejoin="round"
-								>
-									<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-									<line x1="12" y1="8" x2="12" y2="12" />
-									<line x1="12" y1="16" x2="12.01" y2="16" />
-								</svg>
+								<ShieldAlert className="size-4 text-white" />
 							</div>
 							<p className="pt-0.5 text-[13px] leading-relaxed text-gray-700 dark:text-gray-300">
 								Conversations may be reviewed by automated abuse detection systems to ensure a safe
@@ -439,35 +414,27 @@ function OnboardingPage() {
 						</div>
 					</div>
 
-					<button
+					<Button
 						type="button"
+						variant="outline"
+						size="lg"
 						onClick={() => void handleAcknowledge()}
 						disabled={!policyVisible || acknowledged || isAcknowledging}
-						className={`fade-in flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium dark:border-white/10 dark:bg-[#242424] ${acknowledged ? 'text-gray-900 hover:bg-gray-50 dark:text-gray-100 dark:hover:bg-[#242424]' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10'} ${showAckBtn ? '' : 'hidden'} ${ackVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'}`}
+						className={`fade-in gap-2 rounded-md border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium dark:border-white/10 dark:bg-[#242424] ${acknowledged ? 'text-gray-900 hover:bg-gray-50 dark:text-gray-100 dark:hover:bg-[#242424]' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10'} ${showAckBtn ? '' : 'hidden'} ${ackVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'}`}
 					>
-						<svg
-							className={`h-4 w-4 ${acknowledged ? 'text-green-600 dark:text-green-400' : 'text-gray-400 dark:text-gray-500'}`}
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="2"
-							strokeLinecap="round"
-							strokeLinejoin="round"
-						>
-							{acknowledged ? (
-								<>
-									<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-									<polyline points="22 4 12 14.01 9 11.01" />
-								</>
-							) : (
-								<>
-									<circle cx="12" cy="12" r="10" />
-									<path d="M9 12l2 2 4-4" />
-								</>
-							)}
-						</svg>
+						{acknowledged ? (
+							<CircleCheck
+								className="h-4 w-4 text-green-600 dark:text-green-400"
+								aria-hidden="true"
+							/>
+						) : (
+							<Circle
+								className="h-4 w-4 text-gray-400 dark:text-gray-500"
+								aria-hidden="true"
+							/>
+						)}
 						<span>{acknowledged ? 'Acknowledged' : 'Acknowledge and Continue'}</span>
-					</button>
+					</Button>
 				</div>
 
 				<div className="space-y-6">
@@ -491,14 +458,15 @@ function OnboardingPage() {
 						</li>
 					</ul>
 
-					<button
+					<Button
 						type="button"
+						size="xl"
 						onClick={() => void handleStartChatting()}
 						disabled={isStartingChat}
-						className={`fade-in mt-8 w-full rounded-lg bg-[#1a1a1a] py-3.5 font-medium text-white transition-colors hover:bg-black dark:bg-[#f2f2f2] dark:text-[#181818] dark:hover:bg-white ${showStartBtn ? '' : 'hidden'} ${startVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'}`}
+						className={`fade-in mt-8 w-full border-[#1a1a1a] bg-[#1a1a1a] py-3.5 font-medium text-white hover:bg-black focus-visible:ring-[#1a1a1a]/24 dark:border-[#f2f2f2] dark:bg-[#f2f2f2] dark:text-[#181818] dark:hover:bg-white dark:focus-visible:ring-white/24 ${showStartBtn ? '' : 'hidden'} ${startVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'}`}
 					>
-						{isStartingChat ? 'Saving...' : 'Let&apos;s Start Chatting'}
-					</button>
+						{isStartingChat ? 'Saving...' : "Let's Start Chatting"}
+					</Button>
 				</div>
 			</div>
 		</main>

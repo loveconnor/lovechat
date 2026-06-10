@@ -1,11 +1,10 @@
 "use client"
 
 import * as React from "react"
-import type { ComponentPropsWithoutRef } from "react"
 import { Menu as MenuPrimitive } from "@base-ui-components/react/menu"
-import { CheckIcon, ChevronRightIcon } from "lucide-react"
+import { Check as CheckIcon, ChevronRight as ChevronRightIcon } from "love-ui/icons"
 
-import { cn } from "#/lib/utils"
+import { cn } from "@/lib/utils"
 
 const Menu = MenuPrimitive.Root
 
@@ -157,7 +156,7 @@ function MenuSeparator({ className, ...props }: MenuPrimitive.Separator.Props) {
   )
 }
 
-function MenuShortcut({ className, ...props }: ComponentPropsWithoutRef<"span">) {
+function MenuShortcut({ className, ...props }: React.ComponentProps<"span">) {
   return (
     <span
       data-slot="menu-shortcut"

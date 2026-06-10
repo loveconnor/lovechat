@@ -1,4 +1,4 @@
-import { Check, Copy, Download, History, Share, Square, X } from 'lucide-react'
+import { ArrowDown, Check, Copy, Download, History, Play, Share, Square, X } from 'love-ui/icons'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CodeBlockIcon, CodeblockShiki } from '@/components/ui/code-block'
 import type { Languages as ShikiLanguage } from '@/components/ui/code-block'
@@ -265,20 +265,7 @@ export function CanvasCodeBlock({ question, code, onPreview }: CanvasCodeBlockPr
               onClick={onPreview}
               className="ml-1 flex shrink-0 items-center gap-1.5 rounded-full border border-[#E5E5E5] bg-white px-3.5 py-1.5 text-[12px] font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 dark:border-transparent dark:bg-white/10 dark:text-gray-200 dark:hover:bg-white/20"
             >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <polygon points="5 3 19 12 5 21 5 3" />
-              </svg>
+              <Play className="size-3" strokeWidth={2.5} aria-hidden="true" />
               Preview
             </button>
           </div>
@@ -300,21 +287,7 @@ export function CanvasCodeBlock({ question, code, onPreview }: CanvasCodeBlockPr
                 className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full border border-[#E5E5E5] bg-white text-gray-500 shadow-md backdrop-blur-md transition-all hover:bg-gray-50 hover:text-gray-800 dark:border-white/10 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-white/20 dark:hover:text-white"
                 aria-label="Scroll code down"
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <polyline points="19 12 12 19 5 12" />
-                </svg>
+                <ArrowDown className="size-4" aria-hidden="true" />
               </button>
             </div>
           ) : null}

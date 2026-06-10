@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { CodeXml, FileText, GitBranch, Link2, Pencil, SquareX, Trash2 } from 'lucide-react'
+import { CodeXml, Ellipsis as MoreHorizontal, FileText, GitBranch, Link2, Menu, Pencil, Share, SquareX, Trash2 } from 'love-ui/icons'
 import ThemeToggle from '#/components/ThemeToggle'
 
 type ChatHeaderProps = {
@@ -75,22 +75,7 @@ function ChatHeader({
             aria-label="Toggle sidebar"
             title="Toggle sidebar"
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <line x1="3" y1="6" x2="21" y2="6" />
-              <line x1="3" y1="12" x2="21" y2="12" />
-              <line x1="3" y1="18" x2="21" y2="18" />
-            </svg>
+            <Menu className="size-[18px]" aria-hidden="true" />
           </button>
         ) : null}
         <span className="text-[20px] font-bold tracking-tight text-gray-900 dark:text-gray-100">LoveChat</span>
@@ -125,11 +110,7 @@ function ChatHeader({
             aria-expanded={isShareOpen}
             aria-label="Share"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path>
-              <polyline points="16 6 12 2 8 6"></polyline>
-              <line x1="12" y1="2" x2="12" y2="15"></line>
-            </svg>
+            <Share className="size-4" />
             <span className="hidden sm:inline">Share</span>
           </button>
 
@@ -188,11 +169,7 @@ function ChatHeader({
             aria-expanded={isMoreOpen}
             aria-label="More options"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-              <circle cx="5" cy="12" r="1.5"></circle>
-              <circle cx="12" cy="12" r="1.5"></circle>
-              <circle cx="19" cy="12" r="1.5"></circle>
-            </svg>
+            <MoreHorizontal className="size-5" />
           </button>
 
           <div

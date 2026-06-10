@@ -16,7 +16,8 @@ import {
 import { CopyButton } from "../copy-button";
 import { CodeblockShiki } from "../client/shiki";
 
-import { Bun, NPM, PNPM, Yarn } from "@react-symbols/icons";
+import { Bun, PNPM } from "love-ui/logos";
+import { Package } from "love-ui/icons";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../ui/tabs";
 
 interface Command {
@@ -35,7 +36,7 @@ const Commands: Command[] = [
   {
     name: "npm",
     install: "npm i",
-    icon: NPM,
+    icon: Package,
     dlx: "npx",
   },
   {
@@ -47,7 +48,7 @@ const Commands: Command[] = [
   {
     name: "yarn",
     install: "yarn add",
-    icon: Yarn,
+    icon: Package,
     dlx: "yarn dlx",
   },
   {

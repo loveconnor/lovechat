@@ -1,11 +1,16 @@
 import { Spinner as ShadcnSpinner } from "../shadcn-ui/components/ui/spinner";
+import type { SVGProps } from "react";
 import {
-  LoaderCircleIcon,
-  LoaderIcon,
-  LoaderPinwheelIcon,
-  type LucideProps,
-} from "lucide-react";
+  LoaderCircle as LoaderCircleIcon,
+  Loader as LoaderIcon,
+  LoaderPinwheel as LoaderPinwheelIcon,
+} from "love-ui/icons";
 import { cn } from "#/lib/utils";
+
+type LucideProps = SVGProps<SVGSVGElement> & {
+  size?: number | string;
+  strokeWidth?: number | string;
+};
 
 type SpinnerVariantProps = Omit<SpinnerProps, "variant">;
 

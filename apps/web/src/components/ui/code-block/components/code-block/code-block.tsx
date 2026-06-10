@@ -1,7 +1,7 @@
 import type { ComponentProps } from "react";
 
 import { cn } from "../../utils/cn";
-import { FileIcon } from "@react-symbols/icons/utils";
+import { FileCode } from "love-ui/icons";
 
 const CodeBlock = ({
   children,
@@ -53,11 +53,8 @@ interface CodeBlockIconProps extends ComponentProps<"div"> {
 
 const CodeBlockIcon = ({ language, className }: CodeBlockIconProps) => {
   return (
-    <FileIcon
-      width={16}
-      height={16}
-      fileName={`.${language ?? ""}`}
-      autoAssign={true}
+    <FileCode
+      aria-label={language ? `${language} code` : "Code file"}
       className={cn(className)}
     />
   );

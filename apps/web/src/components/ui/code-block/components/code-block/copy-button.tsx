@@ -5,7 +5,7 @@ import type {ComponentProps} from "react";
 
 import { cn } from "../../utils/cn";
 import { copyToClipboard } from "../../utils/copy";
-import { CheckIcon, CopyIcon } from "lucide-react";
+import { Check as CheckIcon, Copy as CopyIcon } from "love-ui/icons";
 
 interface CopyButtonProps extends ComponentProps<"button"> {
   content: string;

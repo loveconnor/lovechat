@@ -1,7 +1,8 @@
-import { Ellipsis, GitBranch, Loader2, LogOut, MessageCircle, Pencil, Plus, Search, Settings, Trash2 } from 'lucide-react'
+import { Ellipsis, GitBranch, LoaderCircle as Loader2, LogOut, MessageCircle, Package, PanelLeft, Pencil, Plus, Search, Settings, Trash2 } from 'love-ui/icons'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '#/components/ui/menu'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '#/components/ui/empty'
+import { Input } from '#/components/ui/input'
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '#/components/ui/menu'
 
 type ChatSidebarSession = {
   id: string
@@ -144,21 +145,7 @@ function ChatSidebar({
         <div className={`flex h-14 shrink-0 items-center ${isExpanded ? 'justify-between px-3' : 'justify-center px-0'}`}>
           {isExpanded ? (
             <div className="flex h-8 w-8 items-center justify-center text-gray-800 dark:text-[#E5E7EB]">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="22"
-                height="22"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-                <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
-                <line x1="12" y1="22.08" x2="12" y2="12" />
-              </svg>
+              <Package className="size-[22px]" />
             </div>
           ) : (
             <button
@@ -171,37 +158,8 @@ function ChatSidebar({
                 onToggleSidebar()
               }}
             >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="22"
-                height="22"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="group-hover/logo:hidden"
-              >
-                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-                <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
-                <line x1="12" y1="22.08" x2="12" y2="12" />
-              </svg>
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="hidden group-hover/logo:block"
-              >
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                <line x1="9" y1="3" x2="9" y2="21" />
-              </svg>
+              <Package className="size-[22px] group-hover/logo:hidden" />
+              <PanelLeft className="hidden size-5 group-hover/logo:block" />
             </button>
           )}
 
@@ -216,20 +174,7 @@ function ChatSidebar({
                 onToggleSidebar()
               }}
             >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                <line x1="9" y1="3" x2="9" y2="21" />
-              </svg>
+              <PanelLeft className="size-5" />
             </button>
           ) : null}
         </div>
@@ -263,13 +208,14 @@ function ChatSidebar({
 
         {isExpanded && showSearchInput ? (
           <div className="px-3 pb-2">
-            <input
+            <Input
               ref={searchInputRef}
               type="text"
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
               placeholder="Search chats..."
-              className="w-full rounded-lg border border-[#E5E5E5] bg-white px-2.5 py-2 text-[13px] text-gray-800 outline-none placeholder:text-gray-400 focus:border-gray-300 dark:border-white/10 dark:bg-[#2f2f2f] dark:text-gray-100 dark:placeholder:text-gray-500"
+              size="sm"
+              className="bg-white text-[13px] text-gray-800 dark:bg-[#2f2f2f] dark:text-gray-100 [&_[data-slot=input]]:px-2.5 [&_[data-slot=input]]:py-2"
             />
           </div>
         ) : null}
@@ -316,7 +262,7 @@ function ChatSidebar({
                           className={`group/session flex items-center rounded-lg transition-colors ${isActive ? 'lovechat-accent-session-active' : 'lovechat-accent-session-hover'}`}
                         >
                           {editingSessionId === session.id ? (
-                            <input
+                            <Input
                               ref={inputRef}
                               type="text"
                               value={editingDraft}
@@ -333,7 +279,8 @@ function ChatSidebar({
                                   cancelRename()
                                 }
                               }}
-                              className="lovechat-accent-focus mx-1 my-1 w-[calc(100%-2.5rem)] flex-1 rounded-md border border-[color:color-mix(in_oklab,var(--ring)_45%,white_55%)] bg-white px-2 py-1 text-[13px] text-gray-900 shadow-sm outline-none dark:bg-[#242424] dark:text-gray-100"
+                              size="sm"
+                              className="mx-1 my-1 w-[calc(100%-2.5rem)] flex-1 bg-white text-[13px] text-gray-900 dark:bg-[#242424] dark:text-gray-100 [&_[data-slot=input]]:px-2 [&_[data-slot=input]]:py-1"
                             />
                           ) : (
                             <button

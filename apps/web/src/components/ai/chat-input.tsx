@@ -1,21 +1,24 @@
 import {
   Brain,
   Check,
-  Code2,
+  Code as Code2,
   FileSearch,
   FileArchive,
-  FileAudio,
-  FileCode2,
+  FileMusic as FileAudio,
+  FileCode as FileCode2,
   FileImage,
   FileSpreadsheet,
   FileText,
-  FileVideo,
+  FilePlay as FileVideo,
+  GraduationCap,
   Globe,
   Plus,
   PenLine,
+  SlidersHorizontal,
   Square,
+  ArrowUp,
   X,
-} from 'lucide-react'
+} from 'love-ui/icons'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ModelSelector } from '#/components/ai/model-selector'
 
@@ -950,27 +953,7 @@ function ChatInput({
                 aria-label="Tools"
                 title="Tools"
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="4" y1="21" x2="4" y2="14" />
-                  <line x1="4" y1="10" x2="4" y2="3" />
-                  <line x1="12" y1="21" x2="12" y2="12" />
-                  <line x1="12" y1="8" x2="12" y2="3" />
-                  <line x1="20" y1="21" x2="20" y2="16" />
-                  <line x1="20" y1="12" x2="20" y2="3" />
-                  <line x1="1" y1="14" x2="7" y2="14" />
-                  <line x1="9" y1="8" x2="15" y2="8" />
-                  <line x1="17" y1="16" x2="23" y2="16" />
-                </svg>
+                <SlidersHorizontal className="size-3.5" />
                 Tools
               </button>
 
@@ -1001,21 +984,7 @@ function ChatInput({
                   className="mt-0.5 flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-[14px] text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-white/10"
                 >
                   <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-purple-50 dark:bg-purple-900/30">
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="#A855F7"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      aria-hidden="true"
-                    >
-                      <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
-                      <path d="M6 12v5c3 3 9 3 12 0v-5" />
-                    </svg>
+                    <GraduationCap className="size-3.5 text-[#A855F7]" aria-hidden="true" />
                   </div>
                   <span className="flex-1 text-left font-medium">Learning Mode</span>
                   <Check className={`size-4 text-purple-500 ${learningModeActive ? '' : 'hidden'}`} />
@@ -1058,22 +1027,7 @@ function ChatInput({
 
             {learningModeActive ? (
               <div className="flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] border border-[#E9D5FF] bg-[#FAF5FF] px-2.5 text-[13px] text-[#9333EA] dark:border-purple-800/50 dark:bg-purple-900/30 dark:text-purple-400">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="shrink-0"
-                  aria-hidden="true"
-                >
-                  <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
-                  <path d="M6 12v5c3 3 9 3 12 0v-5" />
-                </svg>
+                <GraduationCap className="size-3.5 shrink-0" aria-hidden="true" />
                 <span className="font-medium whitespace-nowrap">Learning Mode</span>
                 <button
                   type="button"
@@ -1116,20 +1070,7 @@ function ChatInput({
               {isLoading ? (
                 <Square className="size-3.5 fill-current" />
               ) : (
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="12" y1="19" x2="12" y2="5" />
-                  <polyline points="5 12 12 5 19 12" />
-                </svg>
+                <ArrowUp className="size-4" />
               )}
             </button>
           </div>
