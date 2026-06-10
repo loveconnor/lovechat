@@ -344,31 +344,8 @@ ${trimmedCode}
   }
 
   if (normalizedLanguage === 'js' || normalizedLanguage === 'ts' || normalizedLanguage === 'tsx') {
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Canvas from ${normalizedLanguage.toUpperCase()}</title>
-  <style>
-    body { font-family: Inter, Arial, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; }
-    .canvas-shell { max-width: 960px; margin: 0 auto; padding: 48px 24px; }
-    .canvas-output { border: 1px solid #cbd5e1; border-radius: 16px; background: white; padding: 24px; min-height: 120px; }
-    pre { overflow: auto; border-radius: 12px; background: #0f172a; color: #e2e8f0; padding: 16px; }
-  </style>
-</head>
-<body>
-  <main class="canvas-shell">
-    <h1>Canvas from ${normalizedLanguage.toUpperCase()}</h1>
-    <div id="app" class="canvas-output"></div>
-    <h2>Source</h2>
-    <pre>${escapeHtml(trimmedCode)}</pre>
-  </main>
-  <script type="module">
-${trimmedCode}
-  </script>
-</body>
-</html>`
+    // Keep JS/TS/TSX as source so preview can render with local runtime.
+    return trimmedCode
   }
 
   if (normalizedLanguage === 'json') {
